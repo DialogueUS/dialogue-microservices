@@ -1,0 +1,13 @@
+# Tiny smoke config (plan 4.2): one state, a handful of jurisdictions.
+# With HARVEST_FAKE_SEARCH=1 / HARVEST_FAKE_LLM=1 the smoke is fully
+# offline except the fetch of whatever URLs the fake search returns.
+mode: harvest
+name: smoke-corpus
+scope:
+  levels: [city]
+  states: [HI]
+  only: [Honolulu, Hilo]
+topics: [noise ordinances]
+queries_per_jurisdiction: 1
+search_count: 5
+max_sweeps_per_dispatch: 5

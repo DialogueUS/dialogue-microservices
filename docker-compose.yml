@@ -1,0 +1,30 @@
+# Manual smoke backends (plan 4.2): Postgres + Redis + LocalStack (SQS+S3).
+# Not used by any test — the default suite runs entirely on in-memory fakes.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: harvest
+      POSTGRES_PASSWORD: harvest
+      POSTGRES_DB: harvest
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U harvest"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: sqs,s3
+    ports:
+      - "4566:4566"
+    volumes:
+      - ./ops/localstack-init.sh:/etc/localstack/init/ready.d/init-aws.sh:ro

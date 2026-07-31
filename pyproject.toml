@@ -1,0 +1,75 @@
+[project]
+name = "dialogue-microservices"
+version = "0.1.0"
+description = "Harvesting system workspace root (not a deployable package)"
+requires-python = ">=3.12"
+dependencies = [
+    "harvest-core",
+    "harvest-orchestrator",
+    "harvest-harvester",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+harvest-core = { workspace = true }
+harvest-orchestrator = { workspace = true }
+harvest-harvester = { workspace = true }
+
+[tool.uv.workspace]
+members = ["core", "orchestrator", "harvester"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "respx>=0.22",
+    "fakeredis>=2.26",
+    "types-PyYAML",
+    "boto3-stubs[s3,sqs]",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["core/tests", "orchestrator/tests", "harvester/tests", "tests"]
+markers = [
+    "live: tests that hit real networks/backends; excluded by default",
+]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = ["core/src", "orchestrator/src", "harvester/src"]
+explicit_package_bases = true
+namespace_packages = true
+exclude = ["\\.venv", "build"]
+check_untyped_defs = true
+warn_unused_ignores = false
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# pytest resolves these test-helper imports via sys.path insertion; mypy cannot.
+module = ["conftest", "orch_fixtures", "harv_fixtures", "pdf_fixture", "scenario_world"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "scrapy.*",
+    "scrapy_playwright.*",
+    "langchain_openai.*",
+    "langchain_core.*",
+    "pypdf.*",
+    "botocore.*",
+    "boto3.*",
+    "fakeredis.*",
+]
+ignore_missing_imports = true
