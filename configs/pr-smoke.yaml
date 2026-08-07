@@ -1,0 +1,22 @@
+# Public-records smoke campaign (manual runbook, README). dry_run stays
+# true: the Resend call is skipped and the payload logged; all DB writes
+# still happen so the whole flow rehearses.
+name: pr-smoke
+record_type: meeting minutes
+record_description: >-
+  All city council meeting minutes adopted between January 1 and
+  March 31, 2026.
+requester:
+  name: Smoke Tester
+  email: smoke@example.org
+  anonymous: false
+  consent_confirmed: true
+scope:
+  levels: [county]
+  states: [CA]
+  only: [Kern County]
+limits:
+  daily_send_cap: 5
+  fee_budget_usd: 0.0
+dry_run: true
+notify_email: smoke@example.org

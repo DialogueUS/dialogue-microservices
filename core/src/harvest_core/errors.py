@@ -44,3 +44,7 @@ class PortalError(Exception):
 
 class IllegalTransition(Exception):
     """An artifact state transition the state machine forbids."""
+
+
+class ObjectNotFound(Exception):
+    """The object store has no object at the requested key."""

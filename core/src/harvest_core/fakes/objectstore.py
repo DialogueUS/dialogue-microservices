@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 
+from ..errors import ObjectNotFound
+
 
 class FakeObjectStore:
     def __init__(self) -> None:
@@ -15,6 +17,21 @@ class FakeObjectStore:
         with self._lock:
             self.objects[key] = data
             self.content_types[key] = content_type
+
+    def get(self, key: str) -> bytes:
+        with self._lock:
+            if key not in self.objects:
+                raise ObjectNotFound(key)
+            return self.objects[key]
+
+    def list_keys(self, prefix: str) -> list[str]:
+        with self._lock:
+            return sorted(k for k in self.objects if k.startswith(prefix))
+
+    def delete(self, key: str) -> None:
+        with self._lock:
+            self.objects.pop(key, None)
+            self.content_types.pop(key, None)
 
     def presign(self, key: str) -> str:
         return f"https://fake-object-store.local/{key}?X-Fake-Signature=1"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..constants import PRESIGNED_URL_TTL_S
+from ..errors import ObjectNotFound
 
 
 class S3ObjectStore:
@@ -16,6 +17,24 @@ class S3ObjectStore:
         self._client.put_object(
             Bucket=self._bucket, Key=key, Body=data, ContentType=content_type
         )
+
+    def get(self, key: str) -> bytes:
+        try:
+            resp = self._client.get_object(Bucket=self._bucket, Key=key)
+        except self._client.exceptions.NoSuchKey as exc:
+            raise ObjectNotFound(key) from exc
+        body: bytes = resp["Body"].read()
+        return body
+
+    def list_keys(self, prefix: str) -> list[str]:
+        keys: list[str] = []
+        paginator = self._client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+            keys.extend(o["Key"] for o in page.get("Contents", []))
+        return keys
+
+    def delete(self, key: str) -> None:
+        self._client.delete_object(Bucket=self._bucket, Key=key)
 
     def presign(self, key: str) -> str:
         url: str = self._client.generate_presigned_url(

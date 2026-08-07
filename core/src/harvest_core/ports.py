@@ -52,6 +52,10 @@ class TaskQueue(Protocol):
 
     def change_visibility(self, message_id: str, timeout_seconds: float) -> None: ...
 
+    def pending_count(self) -> int:
+        """Approximate visible + in-flight messages (SQS attributes)."""
+        ...
+
 
 # --------------------------------------------------------------------------
 # Key-value (Redis)
@@ -81,6 +85,14 @@ class KeyValue(Protocol):
 
 class ObjectStore(Protocol):
     def put(self, key: str, data: bytes, content_type: str) -> None: ...
+
+    def get(self, key: str) -> bytes:
+        """Raises ObjectNotFound for a missing key."""
+        ...
+
+    def list_keys(self, prefix: str) -> list[str]: ...
+
+    def delete(self, key: str) -> None: ...
 
     def presign(self, key: str) -> str: ...
 

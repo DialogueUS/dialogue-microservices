@@ -155,3 +155,36 @@ def test_history_insert_idempotent_on_dispatch_and_seq() -> None:
     assert ds.insert_history(**args) is True  # type: ignore[arg-type]
     assert ds.insert_history(**args) is False  # type: ignore[arg-type]
     assert len(ds.list_history("c")) == 1
+
+
+def test_object_store_get_list_delete() -> None:
+    from harvest_core.errors import ObjectNotFound
+    from harvest_core.fakes import FakeObjectStore
+
+    store = FakeObjectStore()
+    store.put("camp/a/1_x.pdf", b"one", "application/pdf")
+    store.put("camp/a/2_y.pdf", b"two", "application/pdf")
+    store.put("other/z.pdf", b"three", "application/pdf")
+
+    assert store.get("camp/a/1_x.pdf") == b"one"
+    assert store.list_keys("camp/") == ["camp/a/1_x.pdf", "camp/a/2_y.pdf"]
+
+    store.delete("camp/a/1_x.pdf")
+    with pytest.raises(ObjectNotFound):
+        store.get("camp/a/1_x.pdf")
+    assert store.list_keys("camp/") == ["camp/a/2_y.pdf"]
+    # deleting a missing key is a no-op, matching S3
+    store.delete("camp/a/1_x.pdf")
+
+
+def test_queue_pending_count_tracks_visible_and_in_flight() -> None:
+    clock = VirtualClock()
+    q = FakeQueue(clock, visibility_timeout=300)
+    assert q.pending_count() == 0
+    q.send("a")
+    q.send("b")
+    assert q.pending_count() == 2
+    got = q.receive(1)  # in flight still counts
+    assert q.pending_count() == 2
+    q.delete(got[0].id)
+    assert q.pending_count() == 1

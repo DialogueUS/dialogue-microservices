@@ -1,4 +1,10 @@
-# dialogue-microservices — the harvesting system
+# dialogue-microservices
+
+Two systems share this workspace: the **harvesting system**
+(`NEW_HARVESTER.md`, v0.4) and the **public-records pipeline**
+(`NEW_PUBLIC_RECORDS.md`) — see its section near the end of this file.
+
+## The harvesting system
 
 Two deployable services bridged by SQS, per `NEW_HARVESTER.md` (v0.4):
 
@@ -112,3 +118,78 @@ uv run harvest-orchestrator import-code-sources --config <cfg> seeds.csv
 # CSV columns: jurisdiction,state,url,publisher   (publisher: municode|amlegal|ecode360|other)
 uv run harvest-orchestrator purge --config <cfg> --yes             # kill-as-purge
 ```
+
+---
+
+## The public-records pipeline (`records/`, `pr-records`)
+
+One microservice per `NEW_PUBLIC_RECORDS.md`: an orchestrator (campaign
+seeding, SES mail polling, silence-based follow-ups, notification
+digests) plus three task consumers (scraper, email sender, email
+receiver) bridged by four SQS queues. Postgres is the system of record,
+S3 holds raw mail and produced documents, Redis dedupes attachment
+bytes per campaign. **Live sends are real legal requests**: a campaign
+never produces work until `requester.consent_confirmed` is true, and
+`dry_run: true` (the default) skips the Resend call while rehearsing
+every database write.
+
+The whole pipeline is tested on the shared in-memory fakes with a
+virtual clock (`records/tests/`, including the end-to-end scenarios in
+`test_pr_scenarios.py`); no test needs a network or backend.
+
+### Manual smoke runbook (plan 4.3)
+
+Status: not yet executed on a live stack; every step is covered by
+equivalent fake-backed tests.
+
+1. **Boot the backends** — same `docker compose up -d`;
+   `ops/localstack-init.sh` also creates the four `pr-*` queues
+   (visibility 900 s; DLQ maxReceiveCount 3/5/5/3) and the
+   `pr-mail` / `pr-documents` buckets.
+
+   ```bash
+   export DATABASE_URL=postgresql+psycopg2://harvest:harvest@localhost:5432/harvest
+   export REDIS_URL=redis://localhost:6379/0
+   export AWS_ENDPOINT_URL=http://localhost:4566
+   export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
+   export PR_MAIL_BUCKET=pr-mail PR_DOCUMENTS_BUCKET=pr-documents
+   base=http://localhost:4566/000000000000
+   export PR_SEARCH_QUEUE_URL=$base/pr-search-queries
+   export PR_CONTACTS_QUEUE_URL=$base/pr-contacts
+   export PR_FOLLOWUPS_QUEUE_URL=$base/pr-followups
+   export PR_INBOUND_QUEUE_URL=$base/pr-inbound-mail
+   export PR_SEARCH_DLQ_URL=$base/pr-search-queries-dlq
+   export PR_CONTACTS_DLQ_URL=$base/pr-contacts-dlq
+   export PR_FOLLOWUPS_DLQ_URL=$base/pr-followups-dlq
+   export PR_INBOUND_DLQ_URL=$base/pr-inbound-mail-dlq
+   export PR_FROM_ADDRESS=requests@your-verified-domain.example
+   export SERPER_API_KEY=... RESEND_API_KEY=... OPENAI_API_KEY=...
+   ```
+
+2. **Register a one-county dry-run campaign** (a YAML matching §11 with
+   a seeded `contact_email` on the jurisdiction skips Serper entirely):
+
+   ```bash
+   uv run pr-records migrate
+   uv run pr-records register configs/pr-smoke.yaml   # dry_run: true
+   uv run pr-records start <campaign-name>
+   uv run pr-records run
+   ```
+
+3. **Watch the dry-run payload in the logs**, then drop a fixture MIME
+   reply (with the thread's `[DLG-…]` subject token) into the mail
+   bucket and watch the poller classify it and store any attachment
+   under `<campaign-slug>/<jurisdiction-slug>/<digest8>_<filename>`.
+
+4. **Kill-as-purge** and verify zero campaign rows, zero
+   `dedupe:<slug>:*` Redis keys, and zero objects under
+   `<campaign-slug>/` — while `jurisdictions` rows and the raw MIME in
+   the mail bucket survive:
+
+   ```bash
+   uv run pr-records kill <campaign-name>
+   ```
+
+DLQ note: any message that dead-letters raises exactly one `other`
+escalation naming the queue and payload (the in-process DLQ watcher);
+alarm on DLQ depth in production all the same.

@@ -39,3 +39,16 @@ class SqsQueue:
             ReceiptHandle=message_id,
             VisibilityTimeout=int(timeout_seconds),
         )
+
+    def pending_count(self) -> int:
+        resp = self._client.get_queue_attributes(
+            QueueUrl=self._queue_url,
+            AttributeNames=[
+                "ApproximateNumberOfMessages",
+                "ApproximateNumberOfMessagesNotVisible",
+            ],
+        )
+        attrs = resp.get("Attributes", {})
+        return int(attrs.get("ApproximateNumberOfMessages", "0")) + int(
+            attrs.get("ApproximateNumberOfMessagesNotVisible", "0")
+        )
