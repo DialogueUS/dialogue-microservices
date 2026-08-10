@@ -71,9 +71,17 @@ fake-backed tests (`tests/test_scenarios.py`, `test_ops_purge.py`).
 
 3. **Flip the run switch and start the orchestrator**
 
+   > **Temporarily disabled:** harvester orchestration is currently gated off
+   > in code — without `HARVEST_ORCHESTRATOR_ENABLED=1` the `run` command wires
+   > up, logs one warning, and idles without dispatching anything, so the
+   > harvester workers below sit on empty queues. The run switch alone is not
+   > enough. See the marked block in `orchestrator/.../cli.py` to revert.
+   > The public-records pipeline is unaffected.
+
    ```bash
    uv run harvest-orchestrator switch --config configs/smoke.yaml running
-   uv run harvest-orchestrator run --config configs/smoke.yaml --interval 60
+   HARVEST_ORCHESTRATOR_ENABLED=1 \
+     uv run harvest-orchestrator run --config configs/smoke.yaml --interval 60
    ```
 
 4. **Start harvester roles** (separate terminals; only `code` needs
@@ -193,3 +201,68 @@ equivalent fake-backed tests.
 DLQ note: any message that dead-letters raises exactly one `other`
 escalation naming the queue and payload (the in-process DLQ watcher);
 alarm on DLQ depth in production all the same.
+
+### Running it under a supervisor (systemd, ECS/Fargate, …)
+
+- **One instance only.** `followup_scan` has no cross-process lock, so a
+  second scheduler double-sends follow-ups. Scale with threads inside
+  the process; on ECS that means `desiredCount: 1` and a deployment
+  policy that stops the old task before starting the new one
+  (`maximumPercent: 100`).
+- **Allow at least 60 s to stop.** `SIGTERM` stops the orchestrator and
+  gives the consumers `SHUTDOWN_DRAIN_S` (25 s) to finish the handlers
+  they are already inside, because an initial request is mailed a moment
+  before its `emails` row is written — killing that window mails the
+  office twice. Anything still running at the deadline is abandoned and
+  redelivers. Set ECS `stopTimeout: 60`; the default 30 s is too tight.
+- **Database URL.** `postgresql+psycopg2://…` works out of the box
+  (`psycopg2-binary` is a `harvest-core` dependency); append
+  `?sslmode=require` for RDS. Every service boot-migrates under a
+  Postgres advisory lock, so concurrent starts are safe — but
+  `create_all` only ever *adds* tables, so a schema change to an
+  existing table is manual DDL.
+
+---
+
+## Container images (`ops/Dockerfile.*`)
+
+```bash
+docker build -f ops/Dockerfile.records      -t pr-records .           # context = repo root
+docker build -f ops/Dockerfile.orchestrator -t harvest-orchestrator .
+```
+
+The context is the **repo root** either way, because `uv.lock` pins the
+whole workspace. Each image still carries only the two packages its
+service is built from — the dependency layer is installed from
+`uv export --package <name>` (53 requirements) rather than
+`uv sync`, which would resolve the workspace's full 84 and drag Scrapy,
+scrapy-playwright and pypdf into both images. Neither image can import
+the other service.
+
+Both run as a non-root user, ship a venv at `/opt/venv` (built at the
+same path, since console scripts hardcode their interpreter), and use
+`ENTRYPOINT`'s exec form so `SIGTERM` reaches Python as PID 1 — which is
+what the drain above depends on. Neither declares a `HEALTHCHECK`: these
+are queue workers with no HTTP listener, so liveness is the task staying
+up, and the real signals are queue and DLQ depth.
+
+The one-off commands are the same image with a different `command`:
+`["migrate"]`, `["register", "/app/configs/<campaign>.yaml"]`. Run
+`migrate` to completion before rolling the services.
+
+Status: not yet built (Docker needs root on this workstation). What is
+verified is the builder stage — its `COPY`/`RUN` instructions executed
+locally against the real workspace, producing the expected 56-package
+environment and a working entry point for each service.
+
+## Deploying (`ops/terraform/`)
+
+A Terraform module brings up both services on ECS/Fargate with RDS,
+ElastiCache, the seven queues and their DLQs, three buckets, Secrets
+Manager slots, IAM, and DLQ alarms. It assumes an existing VPC with NAT
+egress and creates nothing public.
+
+**`ops/terraform/README.md` is the runbook** — apply order, where the
+API keys go, how to run the one-off `migrate` / `register` / `start`
+tasks, and why `pr-records` is pinned to a single instance. Read it
+before applying; the steps are ordered for a reason.

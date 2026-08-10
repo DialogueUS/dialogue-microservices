@@ -1,4 +1,8 @@
-"""Hardcoded constants of the harvesting system (spec §9, "Hardcoded")."""
+"""Hardcoded constants of the harvesting system (spec §9, "Hardcoded").
+
+A few entries are shared with the public-records pipeline, which reuses
+this library's generic ports; those are marked where they appear.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +18,14 @@ FANIN_COUNTER_TTL_S = 1800
 MAX_RECEIVE_COUNT = 3
 ERROR_RETRY_DAYS = 1
 LONG_POLL_WAIT_S = 20
+
+# Database (managed Postgres/RDS: failover and idle timeouts close pooled
+# connections without telling the client, so pre-ping before handing one out
+# and recycle well before the server's own idle limit).
+DB_POOL_RECYCLE_S = 1800
+# One lock id for every boot migration in the database: concurrent task
+# starts serialize instead of racing create_all's check-then-create.
+DB_MIGRATION_LOCK_ID = 0x48415256  # "HARV"
 
 # Batching
 SWEEP_BATCH_RECEIVE = 10
@@ -43,6 +55,15 @@ DEAD_LINK_STATUSES = frozenset({400, 401, 403, 404, 410})
 STORAGE_SLUG_LEN = 60
 STORAGE_HASH_PREFIX_LEN = 8
 PRESIGNED_URL_TTL_S = 120
+
+# Census seeding (shared: both systems expand a scope of ["ALL"] with this)
+ALL_STATES = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA",
+    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA",
+    "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY",
+    "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX",
+    "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+]  # 50 states + DC
 
 # Level priorities (dispatch order: federal -> state -> county -> city)
 LEVEL_PRIORITIES: dict[str, int] = {"federal": 0, "state": 1, "county": 2, "city": 3}

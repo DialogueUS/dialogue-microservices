@@ -1,4 +1,9 @@
-"""Census jurisdiction seeding behind a CensusSource port (plan 2.1).
+"""Census jurisdiction seeding into the harvester's Datastore (plan 2.1).
+
+The port itself (`CensusSource`) and the census.gov client are generic
+and live in `harvest_core`, because the public-records pipeline seeds
+the same jurisdictions; only this Datastore-writing seeder is the
+harvesting system's.
 
 The state-level row is the loaded marker — a state with zero
 incorporated places (Hawaii's counties-only file, say) must not be
@@ -8,39 +13,11 @@ already-harvested documents) but excluded from scope resolution.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
 
-from harvest_core.constants import SEED_THROTTLE_S
+from harvest_core.constants import ALL_STATES, SEED_THROTTLE_S
 from harvest_core.errors import UniqueViolation
-from harvest_core.ports import Clock, Datastore
-
-ALL_STATES = [
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA",
-    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA",
-    "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY",
-    "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX",
-    "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-]  # 50 states + DC
-
-
-@dataclass
-class CensusPlace:
-    name: str
-    level: str  # "county" | "city"
-    fips: str | None = None
-    parent_name: str | None = None  # containing county for places
-
-
-@dataclass
-class CensusState:
-    state_name: str
-    places: list[CensusPlace]
-
-
-class CensusSource(Protocol):
-    def load_state(self, state: str) -> CensusState: ...
+from harvest_core.ports import CensusSource, Clock, Datastore
 
 
 class CensusSeeder:

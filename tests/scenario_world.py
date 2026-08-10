@@ -23,10 +23,10 @@ from harvest_core.fakes import (
     FakeSearch,
     VirtualClock,
 )
+from harvest_core.ports import CensusPlace, CensusState
 from harvest_harvester.code import CodeWorker
 from harvest_harvester.fetch import FetchWorker, HostThrottle
 from harvest_harvester.sweep import SweepWorker
-from harvest_orchestrator.census import CensusPlace, CensusState
 from harvest_orchestrator.loop import Orchestrator
 
 

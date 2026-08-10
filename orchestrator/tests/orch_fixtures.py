@@ -13,7 +13,7 @@ from harvest_core.fakes import (
     FakeQueue,
     VirtualClock,
 )
-from harvest_orchestrator.census import CensusState
+from harvest_core.ports import CensusState
 from harvest_orchestrator.loop import Orchestrator
 
 

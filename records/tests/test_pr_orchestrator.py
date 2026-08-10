@@ -339,7 +339,7 @@ def test_concurrent_ticks_do_not_double_seed(pr: PrWorld) -> None:
 
 class _FakeCensus:
     def __init__(self) -> None:
-        from harvest_orchestrator.census import CensusPlace, CensusState
+        from harvest_core.ports import CensusPlace, CensusState
 
         self.loads: list[str] = []
         self._states = {

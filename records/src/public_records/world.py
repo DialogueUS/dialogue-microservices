@@ -10,8 +10,15 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from harvest_core.ports import Clock, Fetcher, KeyValue, ObjectStore, SearchProvider, TaskQueue
-from harvest_orchestrator.census import CensusSource
+from harvest_core.ports import (
+    CensusSource,
+    Clock,
+    Fetcher,
+    KeyValue,
+    ObjectStore,
+    SearchProvider,
+    TaskQueue,
+)
 
 from .constants import ESCALATION_DETAIL_CHARS
 from .domain import Campaign, EscalationReason, ThreadStatus

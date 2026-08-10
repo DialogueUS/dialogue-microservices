@@ -12,9 +12,9 @@ import threading
 
 from harvest_core.config import HarvestConfig
 from harvest_core.domain import RunState
-from harvest_core.ports import Clock, Datastore, QueryGenerator, TaskQueue
+from harvest_core.ports import CensusSource, Clock, Datastore, QueryGenerator, TaskQueue
 
-from .census import CensusSeeder, CensusSource
+from .census import CensusSeeder
 from .dispatch import dispatch_cycle
 from .reconcile import reconcile_fetch
 from .seeding import seed_targets
@@ -69,7 +69,21 @@ class Orchestrator:
         )
         return counters
 
-    def run_forever(self, interval_seconds: float) -> None:
+    def run_forever(self, interval_seconds: float, *, enabled: bool = True) -> None:
+        # TEMPORARY: the CLI currently passes enabled=False — see the marked
+        # block in cli.py. Idle rather than exit, so the process stays healthy
+        # under a supervisor instead of restart-looping. To restore the
+        # permanent behaviour, delete this branch, the `enabled` parameter, and
+        # the block in cli.py.
+        if not enabled:
+            log.warning(
+                "harvester orchestration is temporarily disabled: idling without "
+                "seeding, dispatching, or reconciling.",
+            )
+            while not self._stop.is_set():
+                self._clock.sleep(interval_seconds)
+            return
+
         while not self._stop.is_set():
             try:
                 counters = self.run_cycle()

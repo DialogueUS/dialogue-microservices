@@ -16,6 +16,7 @@ from typing import Any
 
 from harvest_core.config import HarvestConfig
 from harvest_core.ports import (
+    CensusSource,
     Clock,
     Datastore,
     KeyValue,
@@ -23,8 +24,6 @@ from harvest_core.ports import (
     QueryGenerator,
     TaskQueue,
 )
-
-from .census import CensusSource
 
 
 @dataclass
@@ -55,14 +54,14 @@ def _s3_client() -> Any:
 
 
 def wire_real(config: HarvestConfig) -> Backends:
-    import sqlalchemy as sa
+    from harvest_core.adapters.db import create_engine
     from harvest_core.adapters.postgres import PostgresDatastore, migrate
     from harvest_core.adapters.redis_kv import RedisKeyValue
     from harvest_core.adapters.s3 import S3ObjectStore
     from harvest_core.adapters.sqs import SqsQueue
     from harvest_core.adapters.system_clock import SystemClock
 
-    engine = sa.create_engine(os.environ["DATABASE_URL"])
+    engine = create_engine(os.environ["DATABASE_URL"])
     migrate(engine)
     sqs = _sqs_client()
 
@@ -76,7 +75,7 @@ def wire_real(config: HarvestConfig) -> Backends:
 
         generator = LangChainLLM.from_config(config.llm.model, config.llm.api_key_env)
 
-    from .census_gov import CensusGovSource
+    from harvest_core.adapters.census_gov import CensusGovSource
 
     return Backends(
         ds=PostgresDatastore(engine),
@@ -101,8 +100,7 @@ def wire_fake(config: HarvestConfig) -> Backends:
         FakeQueue,
         VirtualClock,
     )
-
-    from .census import CensusPlace, CensusState
+    from harvest_core.ports import CensusPlace, CensusState
 
     class _TinyCensus:
         def load_state(self, state: str) -> CensusState:

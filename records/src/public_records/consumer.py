@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable
 
 from harvest_core.ports import TaskQueue
@@ -21,12 +22,23 @@ Handler = Callable[[World, str], bool]
 
 
 def process_queue(
-    world: World, queue: TaskQueue, handler: Handler, max_messages: int = BATCH_RECEIVE
+    world: World,
+    queue: TaskQueue,
+    handler: Handler,
+    max_messages: int = BATCH_RECEIVE,
+    stop: threading.Event | None = None,
 ) -> int:
     """One receive pass. Returns the number of messages handled
-    (successfully or not); deletes only after the handler commits."""
+    (successfully or not); deletes only after the handler commits.
+
+    A batch is up to `max_messages` sequential handler calls, so on
+    shutdown the rest of the batch is abandoned unworked (it redelivers)
+    rather than run — that bounds the drain to one in-flight handler.
+    """
     handled = 0
     for message in queue.receive(max_messages):
+        if stop is not None and stop.is_set():
+            break
         handled += 1
         try:
             done = handler(world, message.body)

@@ -16,7 +16,7 @@ from .service import ROLES, HarvesterDeps, HarvesterService
 
 
 def wire_real(config: HarvestConfig) -> HarvesterDeps:
-    import sqlalchemy as sa
+    from harvest_core.adapters.db import create_engine
     from harvest_core.adapters.fetcher import HttpxFetcher
     from harvest_core.adapters.postgres import PostgresDatastore, migrate
     from harvest_core.adapters.redis_kv import RedisKeyValue
@@ -24,7 +24,7 @@ def wire_real(config: HarvestConfig) -> HarvesterDeps:
     from harvest_core.adapters.sqs import SqsQueue
     from harvest_core.adapters.system_clock import SystemClock
 
-    engine = sa.create_engine(os.environ["DATABASE_URL"])
+    engine = create_engine(os.environ["DATABASE_URL"])
     migrate(engine)
     clock = SystemClock()
 

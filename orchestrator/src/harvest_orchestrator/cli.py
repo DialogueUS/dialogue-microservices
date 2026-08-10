@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import os
 import signal
 import sys
 from datetime import UTC, datetime
@@ -18,6 +19,20 @@ from harvest_core.errors import UniqueViolation
 from .loop import Orchestrator
 from .ops import purge_corpus
 from .wiring import wire
+
+# ---- TEMPORARY: harvester orchestration is disabled -----------------------
+# `harvest-orchestrator run` wires up and stays alive, but seeds, dispatches,
+# and reconciles nothing, so the harvester workers see empty queues. Set
+# HARVEST_ORCHESTRATOR_ENABLED=1 to turn it back on without a code change.
+#
+# To restore permanently: delete this block and the `enabled=` argument below,
+# plus the matching branch in loop.py:run_forever.
+#
+# Scoped to the harvesting system only. The public-records pipeline is a
+# separate process (`pr-records run`) that imports nothing from this package,
+# so it is unaffected.
+ORCHESTRATION_ENABLE_ENV_VAR = "HARVEST_ORCHESTRATOR_ENABLED"
+# ---------------------------------------------------------------------------
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -37,20 +52,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
     def _shutdown(signum: int, frame: FrameType | None) -> None:
         logging.getLogger(__name__).info("signal %s: shutting down", signum)
         orchestrator.stop()
+        # Setting the flag alone leaves the interrupted clock.sleep to resume
+        # for its full remaining interval (PEP 475), so the process outlives
+        # its supervisor's grace period and gets killed instead. Raise.
+        raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
-    orchestrator.run_forever(args.interval)
+    try:
+        orchestrator.run_forever(
+            args.interval,
+            enabled=os.environ.get(ORCHESTRATION_ENABLE_ENV_VAR) == "1",
+        )
+    except KeyboardInterrupt:
+        logging.getLogger(__name__).info("stopped")
     return 0
 
 
 def _cmd_migrate(args: argparse.Namespace) -> int:
-    import os
-
-    import sqlalchemy as sa
+    from harvest_core.adapters.db import create_engine
     from harvest_core.adapters.postgres import migrate
 
-    migrate(sa.create_engine(os.environ["DATABASE_URL"]))
+    migrate(create_engine(os.environ["DATABASE_URL"]))
     print("migration complete")
     return 0
 

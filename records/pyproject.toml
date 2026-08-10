@@ -5,7 +5,6 @@ description = "Public-records pipeline: orchestrator + scraper / sender / receiv
 requires-python = ">=3.12"
 dependencies = [
     "harvest-core",
-    "harvest-orchestrator",  # CensusSource port + census.gov client (§3.1)
 ]
 
 [project.scripts]
@@ -13,7 +12,6 @@ pr-records = "public_records.cli:main"
 
 [tool.uv.sources]
 harvest-core = { workspace = true }
-harvest-orchestrator = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

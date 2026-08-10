@@ -2,13 +2,15 @@
 
 The jurisdictions table is unchanged from the old pipeline
 (Census-seeded, §3.1); the CensusSource port and the census.gov client
-are reused from the harvester orchestrator. The state-level row is the
-loaded marker, so a state with zero places is not reloaded every cycle.
+are `harvest_core`'s, shared with the harvesting system's own seeder.
+The state-level row is the loaded marker, so a state with zero places is
+not reloaded every cycle.
 """
 
 from __future__ import annotations
 
-from harvest_orchestrator.census import ALL_STATES, CensusSource
+from harvest_core.constants import ALL_STATES
+from harvest_core.ports import CensusSource
 
 from .errors import UniqueViolation
 from .ports import RecordsStore

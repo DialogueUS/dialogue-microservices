@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import sqlalchemy as sa
+from harvest_core.adapters.db import run_migration
 from sqlalchemy.engine import Engine, Row
 from sqlalchemy.exc import IntegrityError
 
@@ -169,8 +170,8 @@ search_targets = sa.Table(
 
 
 def migrate(engine: Engine) -> None:
-    """Idempotent boot migration."""
-    metadata.create_all(engine)
+    """Idempotent boot migration, safe under concurrent service starts."""
+    run_migration(engine, metadata)
 
 
 def _aware(dt: datetime | None) -> datetime | None:

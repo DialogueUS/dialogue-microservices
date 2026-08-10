@@ -28,6 +28,7 @@ from ..domain import (
     SweepTarget,
 )
 from ..errors import UniqueViolation
+from .db import run_migration
 
 metadata = sa.MetaData()
 
@@ -167,8 +168,9 @@ documents = sa.Table(
 
 
 def migrate(engine: Engine) -> None:
-    """Idempotent boot migration (old spec §10): safe to run every start."""
-    metadata.create_all(engine, checkfirst=True)
+    """Idempotent boot migration (old spec §10): safe to run every start,
+    and safe when several services start at once (see db.run_migration)."""
+    run_migration(engine, metadata)
 
 
 def _pk(result: sa.CursorResult[Any]) -> int:

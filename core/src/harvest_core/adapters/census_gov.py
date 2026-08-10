@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from .census import CensusPlace, CensusState
+from ..ports import CensusPlace, CensusState
 
 log = logging.getLogger(__name__)
 

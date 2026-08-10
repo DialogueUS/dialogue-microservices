@@ -1,6 +1,7 @@
 """Plan 2.1: census seeding via the CensusSource port."""
 
-from harvest_orchestrator.census import CensusPlace, CensusSeeder, CensusState
+from harvest_core.ports import CensusPlace, CensusState
+from harvest_orchestrator.census import CensusSeeder
 from harvest_orchestrator.seeding import resolve_scope
 from orch_fixtures import World, make_config
 

@@ -13,7 +13,10 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import threading
+import time
+from types import FrameType
 
 from .config import load_campaign_config
 from .constants import (
@@ -23,6 +26,7 @@ from .constants import (
     QUEUE_INBOUND,
     QUEUE_SEARCH,
     SCRAPER_HTTP_TIMEOUT_S,
+    SHUTDOWN_DRAIN_S,
 )
 from .consumer import drain_dlq, process_queue
 from .ops import kill_campaign, register_campaign, set_active
@@ -45,20 +49,20 @@ def _require_env(name: str) -> str:
 def build_world() -> World:
     """Wire the real adapters from the §11 service-level environment."""
     import boto3
-    import sqlalchemy as sa
+    from harvest_core.adapters.census_gov import CensusGovSource
+    from harvest_core.adapters.db import create_engine
     from harvest_core.adapters.fetcher import HttpxFetcher
     from harvest_core.adapters.redis_kv import RedisKeyValue
     from harvest_core.adapters.s3 import S3ObjectStore
     from harvest_core.adapters.serper import SerperSearch
     from harvest_core.adapters.sqs import SqsQueue
     from harvest_core.adapters.system_clock import SystemClock
-    from harvest_orchestrator.census_gov import CensusGovSource
 
     from .adapters.llm import LunaContacts, TerraCorrespondence
     from .adapters.resend import ResendTransport
     from .adapters.sql_store import SqlRecordsStore, migrate
 
-    engine = sa.create_engine(_require_env("DATABASE_URL"))
+    engine = create_engine(_require_env("DATABASE_URL"))
     migrate(engine)
     s3 = boto3.client("s3", endpoint_url=os.environ.get("AWS_ENDPOINT_URL"))
     sqs = boto3.client("sqs", endpoint_url=os.environ.get("AWS_ENDPOINT_URL"))
@@ -95,13 +99,20 @@ def run_service(world: World) -> None:
     stop = threading.Event()
     orchestrator = Orchestrator(world, period_s=ORCHESTRATOR_PERIOD_S)
 
+    def sleep_or_stop(seconds: float) -> None:
+        """Sleep in slices so a shutdown isn't waited out to the end."""
+        remaining = seconds
+        while remaining > 0 and not stop.is_set():
+            world.clock.sleep(min(1.0, remaining))
+            remaining -= 1.0
+
     def consumer_loop(queue: object, handler: object) -> None:
         while not stop.is_set():
             try:
-                process_queue(world, queue, handler)  # type: ignore[arg-type]
+                process_queue(world, queue, handler, stop=stop)  # type: ignore[arg-type]
             except Exception:
                 log.exception("consumer loop error")
-                world.clock.sleep(5)
+                sleep_or_stop(5)
 
     loops = [
         threading.Thread(
@@ -142,10 +153,27 @@ def run_service(world: World) -> None:
                     drain_dlq(world, name, dlq)
                 except Exception:
                     log.exception("dlq watcher error for %s", name)
-            world.clock.sleep(60)
+            sleep_or_stop(60)
 
     if dlqs:
         loops.append(threading.Thread(target=dlq_loop, name="dlq-watcher", daemon=True))
+
+    # A send is a real legal request, and `_deliver` runs before the emails
+    # row is written: a task killed in that window redelivers and mails the
+    # office twice. So the container's stop signal has to drain rather than
+    # kill. Setting a flag is not enough — under PEP 475 a handler that
+    # returns leaves the interrupted clock.sleep to resume for its full
+    # remaining time (up to ORCHESTRATOR_PERIOD_S), which outlives any
+    # supervisor's grace period. Raising is what actually unwinds the sleep;
+    # KeyboardInterrupt reuses the shutdown path already below.
+    def _shutdown(signum: int, frame: FrameType | None) -> None:
+        log.info("signal %s: draining consumers", signum)
+        orchestrator.stop()
+        stop.set()
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
 
     for loop in loops:
         loop.start()
@@ -156,6 +184,17 @@ def run_service(world: World) -> None:
     finally:
         orchestrator.stop()
         stop.set()
+        # Consumers are daemons: without the join the interpreter exits and
+        # takes any in-flight handler with it, mid-send. The budget is one
+        # shared wall-clock window — the threads drain concurrently, so each
+        # gets the whole of it to finish the handler it is already inside.
+        deadline = float(SHUTDOWN_DRAIN_S)
+        for loop in loops:
+            start = time.monotonic()
+            loop.join(timeout=max(0.0, deadline))
+            deadline -= time.monotonic() - start
+            if loop.is_alive():
+                log.warning("consumer %s did not finish its pass in time", loop.name)
 
 
 def main() -> None:

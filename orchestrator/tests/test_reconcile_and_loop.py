@@ -89,7 +89,7 @@ def test_flipping_switch_stops_new_dispatch_within_one_cycle(world: World) -> No
 
 
 def test_loop_seeds_targets_from_census_scope(world: World) -> None:
-    from harvest_orchestrator.census import CensusPlace, CensusState
+    from harvest_core.ports import CensusPlace, CensusState
 
     world.census.data["CA"] = CensusState(
         state_name="California",

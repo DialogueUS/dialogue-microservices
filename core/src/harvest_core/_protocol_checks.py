@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from . import ports
+    from .adapters.census_gov import CensusGovSource
     from .adapters.fetcher import HttpxFetcher
     from .adapters.llm import LangChainLLM
     from .adapters.postgres import PostgresDatastore
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
         search: SerperSearch,
         llm: LangChainLLM,
         fetcher: HttpxFetcher,
+        census: CensusGovSource,
     ) -> None:
         _c: ports.Clock = clock
         _q: ports.TaskQueue = queue
@@ -72,3 +74,4 @@ if TYPE_CHECKING:
         _g: ports.QueryGenerator = llm
         _t: ports.Triage = llm
         _f: ports.Fetcher = fetcher
+        _n: ports.CensusSource = census

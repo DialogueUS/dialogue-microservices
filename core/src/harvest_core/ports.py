@@ -118,6 +118,33 @@ class SearchProvider(Protocol):
 
 
 # --------------------------------------------------------------------------
+# Census (jurisdiction seeding, §3.1)
+#
+# Both systems seed the same jurisdictions from census.gov, so the port
+# lives here rather than in either service. What each does with a loaded
+# state differs and stays put: `CensusSeeder` writes the harvester's
+# Datastore, `records.census.ensure_states` writes the RecordsStore.
+
+
+@dataclass
+class CensusPlace:
+    name: str
+    level: str  # "county" | "city"
+    fips: str | None = None
+    parent_name: str | None = None  # containing county for places
+
+
+@dataclass
+class CensusState:
+    state_name: str
+    places: list[CensusPlace]
+
+
+class CensusSource(Protocol):
+    def load_state(self, state: str) -> CensusState: ...
+
+
+# --------------------------------------------------------------------------
 # LLM: query generation (orchestrator) and relevance triage (harvester)
 
 

@@ -22,6 +22,10 @@ LLM_RETRIES = 2
 
 # -- orchestrator (§5)
 ORCHESTRATOR_PERIOD_S = 300
+# On SIGTERM, how long to let each consumer thread finish its receive pass
+# (a 20 s long poll plus the handler). Must stay under the supervisor's own
+# grace period — on ECS/Fargate that is `stopTimeout`, default 30 s.
+SHUTDOWN_DRAIN_S = 25
 QUERIES_PER_TARGET_MAX = 3
 FALLBACK_QUERY_PATTERN = "{name} {state} public records request CPRA email clerk"
 MAIL_POLL_CAP = 200
