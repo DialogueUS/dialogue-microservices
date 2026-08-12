@@ -68,6 +68,73 @@ def test_seeded_contact_shortcuts_to_contacts_queue(pr: PrWorld) -> None:
     assert target is not None and target.resolved is True
 
 
+def test_test_campaign_seeds_from_config_and_never_searches(pr: PrWorld) -> None:
+    campaign = pr.add_campaign(
+        # scope is ignored: a test campaign's targets are its contacts
+        scope={"only": ["Nowhere County"]},
+        test_contacts=[
+            {"jurisdiction": "Kern County", "state": "CA", "email": "one@example.test"},
+            {"jurisdiction": "Austin", "state": "TX", "level": "city",
+             "email": "two@example.test"},
+        ],
+    )
+    assert seed_pass(pr.world) == 2
+    assert pr.search_queue.pending_count() == 0  # no search stage at all
+    assert pr.query_generator.calls == []  # nor an LLM query to run through it
+
+    msgs = sorted(
+        (ContactMessage.from_json(b) for b in pr.contacts_queue.bodies()),
+        key=lambda m: m.contact_email,
+    )
+    assert [m.contact_email for m in msgs] == ["one@example.test", "two@example.test"]
+    assert all(m.source == "seeded" and m.bypass_cooldown for m in msgs)
+
+    # the jurisdiction rows are created on the spot, without census, and
+    # the shared contact column is left alone — a real campaign in the
+    # same scope must not inherit the test address
+    kern = pr.store.find_jurisdiction("Kern County", "CA", "county")
+    assert kern is not None and kern.contact_email is None
+    target = pr.store.find_search_target(campaign.id, kern.id)
+    assert target is not None and target.resolved is True
+    assert pr.store.list_campaigns()[0].seeded is True
+
+
+def test_test_campaign_seeding_idempotent_after_crash_mid_pass(pr: PrWorld) -> None:
+    existing = pr.add_jurisdiction("Kern County")
+    pr.add_campaign(test_contacts=[
+        {"jurisdiction": "Kern County", "state": "CA", "email": "one@example.test"},
+        {"jurisdiction": "Inyo County", "state": "CA", "email": "two@example.test"},
+    ])
+
+    # crash mid-pass: the queue dies on the 2nd contact's send
+    calls = {"n": 0}
+
+    def hook(body: str) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("queue died")
+
+    pr.contacts_queue.send_hook = hook
+    try:
+        seed_pass(pr.world)
+    except RuntimeError:
+        pass
+    pr.contacts_queue.send_hook = None
+    assert pr.store.list_campaigns()[0].seeded is False
+
+    # The re-run re-sends nothing: both targets were resolved before
+    # their send, so the second contact is dropped rather than risking
+    # two copies of a real request. Same trade as the searched
+    # seeded-contact branch; recovering it is a human act.
+    assert seed_pass(pr.world) == 0
+    emails = [ContactMessage.from_json(b).contact_email for b in pr.contacts_queue.bodies()]
+    assert emails == ["one@example.test"]
+    assert pr.store.list_campaigns()[0].seeded is True
+    # the existing jurisdiction row was found, not duplicated
+    assert [j.name for j in pr.store.list_jurisdictions()] == ["Kern County", "Inyo County"]
+    assert pr.store.find_jurisdiction("Kern County", "CA", "county") == existing
+
+
 def test_seeding_idempotent_after_crash_mid_pass(pr: PrWorld) -> None:
     pr.add_campaign()
     pr.add_jurisdiction("Kern County")

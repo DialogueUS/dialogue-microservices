@@ -72,8 +72,9 @@ full `pytest` suite stay green.
   surface (record_type/description, legal_basis default, requester.*
   with `anonymous=true` / `consent_confirmed=false` defaults, scope.*,
   `dry_run=true`, all `limits.*` and `contacts.min_confidence`
-  defaults, notify_email) plus registration-time validation rejecting
-  an anonymous requester whose scope can include AL/AR/TN/VA/DE/NJ/KY.
+  defaults, notify_email, `test_contacts[]`) plus registration-time
+  validation rejecting an anonymous requester whose scope — or whose
+  test contacts — can include AL/AR/TN/VA/DE/NJ/KY.
   Constants module: visibility 900 s, DLQ maxReceiveCounts 3/5/3,
   orchestrator period 300 s, 3 queries per target, page size 8, page
   budget 4 / 12 s, 12 candidates / 120+60 context, junk local-parts and
@@ -165,12 +166,16 @@ full `pytest` suite stay green.
   hard-cap 3 with truncation recorded in `queries_enqueued`; enqueue to
   `pr-search-queries`; seeded-contact shortcut (target `resolved`,
   direct `pr-contacts` message, `source: "seeded"`, no review flag);
-  `seeded = true` only after **every** in-scope target is enqueued.
+  test campaigns (`test_contacts` non-empty) seed
+  from the config instead — jurisdiction rows created on demand, no
+  census, no query generation, no search message; `seeded = true` only
+  after **every** in-scope target is enqueued.
   - **Verify:** tests — `consent_confirmed = false` produces zero queue
     work even with `active = true`; LLM failure still enqueues exactly
     the one fallback query; crash mid-pass (kill between targets)
     re-runs without duplicate `search_targets` rows and only then sets
-    `seeded`; 5-query model output truncates to 3.
+    `seeded`; 5-query model output truncates to 3; a test campaign
+    reaches `fulfilled` with the search provider never called.
 
 - [x] **2.3 Mail poller.** Gate on `pr-inbound-mail` empty (visible +
   in-flight both 0 on the fake); list mail bucket, skip

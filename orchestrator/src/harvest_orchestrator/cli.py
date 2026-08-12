@@ -8,15 +8,18 @@ import logging
 import os
 import signal
 import sys
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
 
 from harvest_core.config import load_config
+from harvest_core.constants import HEALTH_PROBE_TIMEOUT_S
 from harvest_core.domain import Publisher, RunState
 from harvest_core.errors import UniqueViolation
+from harvest_core.health import HealthResponder, probe
 
-from .loop import Orchestrator
+from .loop import SERVICE_NAME, Orchestrator
 from .ops import purge_corpus
 from .wiring import wire
 
@@ -49,9 +52,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
         fetch_queue=backends.fetch_queue,
     )
 
+    # Health: answer pings on Redis pub/sub for as long as the loop lives.
+    # Its own thread, because the loop spends nearly all its time asleep
+    # between intervals and a probe cannot wait that long for an answer.
+    health_stop = threading.Event()
+    responder = HealthResponder(backends.pubsub, SERVICE_NAME, orchestrator.health)
+    health_thread = threading.Thread(
+        target=responder.serve_forever, args=(health_stop,), name="health", daemon=True
+    )
+
     def _shutdown(signum: int, frame: FrameType | None) -> None:
         logging.getLogger(__name__).info("signal %s: shutting down", signum)
         orchestrator.stop()
+        health_stop.set()
         # Setting the flag alone leaves the interrupted clock.sleep to resume
         # for its full remaining interval (PEP 475), so the process outlives
         # its supervisor's grace period and gets killed instead. Raise.
@@ -59,6 +72,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
+    health_thread.start()
     try:
         orchestrator.run_forever(
             args.interval,
@@ -66,7 +80,31 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
     except KeyboardInterrupt:
         logging.getLogger(__name__).info("stopped")
+    finally:
+        health_stop.set()
     return 0
+
+
+def _cmd_healthcheck(args: argparse.Namespace) -> int:
+    """Ping the running orchestrator; exit 0 healthy, 1 not.
+
+    Deliberately does not call `wire()`: that opens Postgres and runs the
+    boot migration, which a check running every thirty seconds must never
+    do. The config is read only for the name of the Redis URL variable.
+    """
+    from harvest_core.adapters.redis_pubsub import RedisPubSub
+
+    config = load_config(args.config)
+    status = probe(
+        RedisPubSub.from_url(os.environ[config.redis_url_env]),
+        SERVICE_NAME,
+        timeout_s=args.timeout,
+    )
+    if status.healthy:
+        print(f"healthy{f' ({status.detail})' if status.detail else ''}")
+        return 0
+    print(f"unhealthy: {status.failures()}", file=sys.stderr)
+    return 1
 
 
 def _cmd_migrate(args: argparse.Namespace) -> int:
@@ -147,6 +185,15 @@ def main(argv: list[str] | None = None) -> int:
 
     p_migrate = sub.add_parser("migrate", help="apply the idempotent boot migration")
     p_migrate.set_defaults(func=_cmd_migrate)
+
+    p_health = sub.add_parser(
+        "healthcheck", help="ping the running loop over Redis pub/sub (exit 0 = healthy)"
+    )
+    # No --backend: this talks to whatever process is already running, and
+    # reads the config only for the name of the Redis URL variable.
+    p_health.add_argument("--config", required=True, help="path to harvest config YAML")
+    p_health.add_argument("--timeout", type=float, default=HEALTH_PROBE_TIMEOUT_S)
+    p_health.set_defaults(func=_cmd_healthcheck)
 
     p_switch = sub.add_parser("switch", help="flip the run switch")
     _common(p_switch)

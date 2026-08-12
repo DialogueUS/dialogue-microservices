@@ -93,7 +93,11 @@ class FakeRecordsStore:
 
     def update_campaign_config(self, campaign_id: int, config: CampaignConfig) -> None:
         with self._lock:
-            self._campaigns[campaign_id].config = config
+            # The stored name wins, as in Postgres: there it is a column
+            # of its own and the config document is rewritten to match,
+            # so a rename never takes effect here either.
+            existing = self._campaigns[campaign_id]
+            existing.config = config.model_copy(update={"name": existing.name})
 
     def count_outbound_since(self, campaign_id: int, since: datetime) -> int:
         with self._lock:
@@ -127,6 +131,13 @@ class FakeRecordsStore:
     def get_jurisdiction(self, jurisdiction_id: int) -> Jurisdiction | None:
         with self._lock:
             return self._jurisdictions.get(jurisdiction_id)
+
+    def find_jurisdiction(self, name: str, state: str, level: str) -> Jurisdiction | None:
+        with self._lock:
+            for j in self._jurisdictions.values():
+                if (j.level, j.state, j.name) == (level, state, name):
+                    return j
+            return None
 
     def list_jurisdictions(
         self, states: list[str] | None = None, levels: list[str] | None = None
@@ -390,6 +401,7 @@ class FakeRecordsStore:
         resend_id: str | None,
         next_action_at: datetime,
         now: datetime,
+        stamp_cooldown: bool = True,
     ) -> tuple[EmailThread, EmailRecord]:
         with self._lock:
             if existing_thread_id is not None:
@@ -432,7 +444,8 @@ class FakeRecordsStore:
                 attachment_refs=[],
                 created_at=now,
             )
-            self._jurisdictions[jurisdiction_id].last_contacted_at = now
+            if stamp_cooldown:
+                self._jurisdictions[jurisdiction_id].last_contacted_at = now
             return (
                 replace(thread, attachment_keys=list(thread.attachment_keys)),
                 email,

@@ -13,6 +13,7 @@ from harvest_core.adapters.fetcher import HttpxFetcher, encode_url
 from harvest_core.adapters.llm import LangChainLLM, QueryGenerationOutput, TriageOutput
 from harvest_core.adapters.postgres import PostgresDatastore, migrate
 from harvest_core.adapters.redis_kv import RedisKeyValue
+from harvest_core.adapters.redis_pubsub import RedisPubSub
 from harvest_core.adapters.serper import SERPER_URL, SerperSearch
 from harvest_core.adapters.sqs import SqsQueue
 from harvest_core.domain import Jurisdiction, Source, SweepResult
@@ -198,6 +199,28 @@ def test_redis_adapter_semantics_with_fakeredis() -> None:
     assert kv.get("url:c:h") == "1"
     assert kv.delete_prefix("url:c:") == 1
     assert kv.get("url:c:h") is None
+
+
+def test_redis_pubsub_adapter_never_returns_the_subscribe_confirmation() -> None:
+    """redis-py hands back a {'type': 'subscribe'} frame before any real
+    message. An adapter that passed it through would have the health
+    probe's first poll read `1` as the service's reply."""
+    bus = RedisPubSub(fakeredis.FakeRedis(decode_responses=True))
+    subscription = bus.subscribe("health:svc:pong:n1")
+
+    assert bus.publish("health:svc:pong:n1", '{"healthy": true}') == 1
+    assert subscription.poll(1.0) == '{"healthy": true}'
+
+
+def test_redis_pubsub_adapter_times_out_and_closes() -> None:
+    bus = RedisPubSub(fakeredis.FakeRedis(decode_responses=True))
+    subscription = bus.subscribe("health:svc:ping")
+
+    assert subscription.poll(0.05) is None  # nothing published: None, not a frame
+
+    subscription.close()
+    subscription.close()  # idempotent, so `finally: close()` is always safe
+    assert bus.publish("health:svc:ping", "n1") == 0
 
 
 # -- Postgres datastore (SQLite engine; live Postgres deferred to 4.2) ------

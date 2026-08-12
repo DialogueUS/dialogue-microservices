@@ -132,6 +132,27 @@ def test_office_cooldown_shared_across_campaigns_and_bypass(pr: PrWorld) -> None
     assert handle_contact(pr.world, _contact_msg(campaign_b, jur, "records@x.gov")) is True
 
 
+def test_test_campaign_does_not_claim_the_shared_office_clock(pr: PrWorld) -> None:
+    test_campaign = pr.add_campaign(
+        name="camp-test",
+        test_contacts=[
+            {"jurisdiction": "Pasadena", "state": "CA", "email": "inbox@example.test"}
+        ],
+    )
+    real = pr.add_campaign(name="camp-real")
+    jur = pr.add_jurisdiction()  # Pasadena, CA — the same office row
+
+    msg = _contact_msg(test_campaign, jur, "inbox@example.test", source="seeded", bypass=True)
+    assert handle_contact(pr.world, msg) is True
+    assert pr.transport.sent[0].to_address == "inbox@example.test"
+
+    # the office was never really written to, so the real campaign is
+    # free to mail it immediately — and its send stamps the clock
+    assert pr.store.get_jurisdiction(jur.id).last_contacted_at is None  # type: ignore[union-attr]
+    assert handle_contact(pr.world, _contact_msg(real, jur, "records@x.gov")) is True
+    assert pr.store.get_jurisdiction(jur.id).last_contacted_at is not None  # type: ignore[union-attr]
+
+
 def test_gate_order_cap_checked_before_cooldown(pr: PrWorld) -> None:
     campaign = pr.add_campaign(limits={"daily_send_cap": 1})
     jur = pr.add_jurisdiction()

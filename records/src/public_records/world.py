@@ -16,6 +16,7 @@ from harvest_core.ports import (
     Fetcher,
     KeyValue,
     ObjectStore,
+    PubSub,
     SearchProvider,
     TaskQueue,
 )
@@ -55,6 +56,11 @@ class World:
     transport: EmailTransport
     from_address: str  # Resend-verified sender (required config)
     census: CensusSource | None = None  # jurisdiction seeding (§3.1)
+    # Health check only, and used by nothing a handler touches: `run_service`
+    # answers pings on it. None means no responder runs — which is right for
+    # tests and for the one-off commands, and would fail the container health
+    # check if it ever happened to `run`.
+    pubsub: PubSub | None = None
 
 
 def escalate(

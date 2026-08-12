@@ -7,6 +7,7 @@ from .kv import FakeKeyValue
 from .llm import FakeLLM
 from .objectstore import FakeObjectStore
 from .portal import FakePortalDiscoverer
+from .pubsub import FakePubSub, FakeSubscription
 from .queue import FakeQueue
 from .search import FakeSearch
 
@@ -17,7 +18,9 @@ __all__ = [
     "FakeLLM",
     "FakeObjectStore",
     "FakePortalDiscoverer",
+    "FakePubSub",
     "FakeQueue",
     "FakeSearch",
+    "FakeSubscription",
     "VirtualClock",
 ]

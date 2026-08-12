@@ -188,3 +188,68 @@ def test_queue_pending_count_tracks_visible_and_in_flight() -> None:
     assert q.pending_count() == 2
     q.delete(got[0].id)
     assert q.pending_count() == 1
+
+
+# -- pub/sub ----------------------------------------------------------------
+#
+# The property that separates this from FakeQueue: a message with no
+# listener is *lost*, not held. Everything the health check does — subscribe
+# to the reply channel before pinging, treat a missing reply as a failure —
+# only makes sense because of it.
+
+
+def test_publish_with_no_subscriber_is_dropped_not_queued() -> None:
+    from harvest_core.fakes import FakePubSub
+
+    clock = VirtualClock()
+    bus = FakePubSub(clock)
+
+    assert bus.publish("health:svc:ping", "n1") == 0
+
+    # A subscriber arriving afterwards has missed it for good.
+    late = bus.subscribe("health:svc:ping")
+    assert late.poll(1.0) is None
+
+
+def test_publish_reaches_every_current_subscriber_and_counts_them() -> None:
+    from harvest_core.fakes import FakePubSub
+
+    bus = FakePubSub(VirtualClock())
+    first = bus.subscribe("chan")
+    second = bus.subscribe("chan")
+    elsewhere = bus.subscribe("other")
+
+    assert bus.publish("chan", "hello") == 2
+    assert first.poll(1.0) == "hello"
+    assert second.poll(1.0) == "hello"
+    assert elsewhere.poll(1.0) is None
+
+
+def test_waiting_message_returns_at_once_but_an_empty_poll_costs_its_timeout() -> None:
+    from harvest_core.fakes import FakePubSub
+
+    clock = VirtualClock()
+    bus = FakePubSub(clock)
+    sub = bus.subscribe("chan")
+    bus.publish("chan", "queued")
+    started = clock.now()
+
+    assert sub.poll(30.0) == "queued"
+    assert (clock.now() - started).total_seconds() == 0  # no time spent
+
+    assert sub.poll(30.0) is None
+    assert (clock.now() - started).total_seconds() == 30  # blocked its full wait
+
+
+def test_closing_a_subscription_stops_delivery_and_is_idempotent() -> None:
+    from harvest_core.fakes import FakePubSub
+
+    bus = FakePubSub(VirtualClock())
+    sub = bus.subscribe("chan")
+    sub.close()
+    sub.close()  # a second close is a no-op, matching redis-py
+
+    assert bus.publish("chan", "hello") == 0
+    assert bus.subscriber_count("chan") == 0
+    with pytest.raises(RuntimeError):
+        sub.poll(1.0)

@@ -149,6 +149,11 @@ class RecordsStore(Protocol):
 
     def get_jurisdiction(self, jurisdiction_id: int) -> Jurisdiction | None: ...
 
+    def find_jurisdiction(self, name: str, state: str, level: str) -> Jurisdiction | None:
+        """By the (level, state, name) unique key; the read half of the
+        insert-or-find a test campaign's seeding does."""
+        ...
+
     def list_jurisdictions(
         self, states: list[str] | None = None, levels: list[str] | None = None
     ) -> list[Jurisdiction]: ...
@@ -280,10 +285,15 @@ class RecordsStore(Protocol):
         resend_id: str | None,
         next_action_at: datetime,
         now: datetime,
+        stamp_cooldown: bool = True,
     ) -> tuple[EmailThread, EmailRecord]:
         """One transaction: create the thread (or promote an existing
         pending_send one), the outbound emails row, and stamp the
-        jurisdiction's last_contacted_at."""
+        jurisdiction's last_contacted_at.
+
+        `stamp_cooldown=False` leaves that shared clock alone — a test
+        campaign mails its own address, not the office, so it must not
+        throttle the campaigns that do."""
         ...
 
     def record_thread_send(

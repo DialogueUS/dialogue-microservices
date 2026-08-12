@@ -98,15 +98,19 @@ all four queues:
 
 **`campaigns`** — one row per campaign (replaces config-file-as-truth;
 the row is created from the campaign config at registration).
-`id`, `name` (unique slug), `record_type`, `record_description`,
-`legal_basis` (default: "state public records law and, where applicable,
-the federal Freedom of Information Act"), `requester_*` fields
-(`name`, `email`, `organization`, `phone`, `mailing_address`,
-`anonymous` default true, `consent_confirmed` default false), `scope`
-(JSON: `levels`, `states`, `only`), `limits` (JSON, §11), `active`
-(bool — the run switch), `seeded` (bool, default false — set true by the
-orchestrator only after **all** search queries for the campaign are
-enqueued), `dry_run` (bool, default true), `notify_email`, `created_at`.
+`id`, `name` (unique slug), `config_yaml` (the whole §11 document as
+YAML — every config key is read back by parsing this column, so the
+document and the row cannot disagree; the file the operator registers
+is only the input), `active` (bool — the run switch), `seeded` (bool,
+default false — set true by the orchestrator only after **all** search
+queries for the campaign are enqueued), `created_at`.
+
+`name` is the one §11 key that is *also* a column, because it is
+identity: the lookup key, the unique constraint that refuses a duplicate
+registration, and the slug behind the S3 and Redis prefixes. The column
+wins — a config update that changes `name` is rewritten to the stored
+one rather than renaming a live campaign out from under its objects.
+`active` and `seeded` are runtime state and appear in no document.
 
 **`jurisdictions`** — unchanged from the old pipeline (Census-seeded;
 `name`, `state`, `level`, `parent_name`), plus the shared contact
@@ -270,7 +274,32 @@ and `consent_confirmed = true`:
 If the jurisdiction already carries a seeded `contact_email`, no queries
 are generated: the target is marked `resolved` and a `pr-contacts`
 message is enqueued directly (seeded contacts are trusted and never
-flagged for review — carried over).
+flagged for review — carried over). The resolve precedes the enqueue
+deliberately: a crash in that window drops the contact, and re-sending
+instead would risk two copies of a real request racing through the
+sender pool, which is the worse failure. Recovering the dropped contact
+is a human act (re-register, or resolve it from the campaign's
+escalations).
+
+**Test campaigns.** A campaign whose config carries `test_contacts`
+(§11) takes its targets from that list instead of `scope`, and the whole
+search stage is skipped structurally: no census load, no query
+generation, no `pr-search-queries` message, so Serper is never reached.
+Each entry names a jurisdiction (`jurisdiction`, `state`, `level`) and
+the address that stands in for its office; the row is created if it does
+not exist, the target is resolved by the same compare-and-set, and a
+`pr-contacts` message is enqueued with `source: seeded`.
+
+The address stays *in the campaign config* and is never written to
+`jurisdictions.contact_email`: that row is shared, so a test address
+there would silently redirect every real campaign in the same scope.
+For the same reason a test campaign neither observes nor advances the
+shared office clock — its contact messages carry `bypass_cooldown`, and
+its sends leave `last_contacted_at` alone. Everything downstream is the
+real thing: consent, the daily cap, the anonymous-state refusal,
+drafting, threading, follow-ups and inbound classification all run
+unchanged, and `dry_run` remains the independent switch for whether
+Resend is actually called.
 
 ### 5.2 Mail polling
 
@@ -622,7 +651,8 @@ Carried forward as settled rulings:
 
 ## 11. Configuration reference
 
-Per-campaign (stored on the `campaigns` row at registration):
+Per-campaign (registered from a YAML file, stored verbatim in
+`campaigns.config_yaml`, and read back by parsing that column):
 
 | key | default | notes |
 |---|---|---|
@@ -641,6 +671,7 @@ Per-campaign (stored on the `campaigns` row at registration):
 | `limits.daily_send_cap` | `200` | outbound emails/UTC day; gates initial requests only |
 | `limits.fee_budget_usd` | `0.0` | 0 = every fee escalates |
 | `contacts.min_confidence` | `0.6` | luna contact-pick floor |
+| `test_contacts[]` | *(empty)* | `jurisdiction` / `state` / `level` (default `county`) / `email`. Non-empty ⇒ a **test campaign**: targets come from this list, `scope` is ignored, and no search or census call is made (§5.1) |
 | `notify_email` | *(none)* | escalation/fee digest recipient |
 
 Service-level environment: `DATABASE_URL`, `REDIS_URL`,

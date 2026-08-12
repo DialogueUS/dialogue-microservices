@@ -21,6 +21,7 @@ from harvest_core.ports import (
     Datastore,
     KeyValue,
     ObjectStore,
+    PubSub,
     QueryGenerator,
     TaskQueue,
 )
@@ -37,6 +38,7 @@ class Backends:
     fetch_queue: TaskQueue
     generator: QueryGenerator
     census: CensusSource
+    pubsub: PubSub  # health check only (harvest_core.health)
 
 
 def _sqs_client() -> Any:
@@ -57,6 +59,7 @@ def wire_real(config: HarvestConfig) -> Backends:
     from harvest_core.adapters.db import create_engine
     from harvest_core.adapters.postgres import PostgresDatastore, migrate
     from harvest_core.adapters.redis_kv import RedisKeyValue
+    from harvest_core.adapters.redis_pubsub import RedisPubSub
     from harvest_core.adapters.s3 import S3ObjectStore
     from harvest_core.adapters.sqs import SqsQueue
     from harvest_core.adapters.system_clock import SystemClock
@@ -64,6 +67,7 @@ def wire_real(config: HarvestConfig) -> Backends:
     engine = create_engine(os.environ["DATABASE_URL"])
     migrate(engine)
     sqs = _sqs_client()
+    redis_url = os.environ[config.redis_url_env]
 
     generator: QueryGenerator
     if os.environ.get("HARVEST_FAKE_LLM"):
@@ -80,13 +84,15 @@ def wire_real(config: HarvestConfig) -> Backends:
     return Backends(
         ds=PostgresDatastore(engine),
         clock=SystemClock(),
-        kv=RedisKeyValue.from_url(os.environ[config.redis_url_env]),
+        kv=RedisKeyValue.from_url(redis_url),
         objects=S3ObjectStore(_s3_client(), os.environ["S3_BUCKET"]),
         sweep_queue=SqsQueue(sqs, os.environ["SWEEP_QUEUE_URL"]),
         code_queue=SqsQueue(sqs, os.environ["CODE_QUEUE_URL"]),
         fetch_queue=SqsQueue(sqs, os.environ["FETCH_QUEUE_URL"]),
         generator=generator,
         census=CensusGovSource(),
+        # Its own client: a subscribed connection cannot serve KeyValue.
+        pubsub=RedisPubSub.from_url(redis_url),
     )
 
 
@@ -97,6 +103,7 @@ def wire_fake(config: HarvestConfig) -> Backends:
         FakeKeyValue,
         FakeLLM,
         FakeObjectStore,
+        FakePubSub,
         FakeQueue,
         VirtualClock,
     )
@@ -125,6 +132,7 @@ def wire_fake(config: HarvestConfig) -> Backends:
         fetch_queue=FakeQueue(clock),
         generator=FakeLLM(),
         census=_TinyCensus(),
+        pubsub=FakePubSub(clock),
     )
 
 

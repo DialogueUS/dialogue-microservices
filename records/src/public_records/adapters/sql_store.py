@@ -17,7 +17,7 @@ from harvest_core.adapters.db import run_migration
 from sqlalchemy.engine import Engine, Row
 from sqlalchemy.exc import IntegrityError
 
-from ..config import CampaignConfig, ContactsConfig, LimitsConfig, RequesterConfig, ScopeConfig
+from ..config import CampaignConfig, dump_campaign_config, parse_campaign_config
 from ..domain import (
     Campaign,
     Classification,
@@ -43,24 +43,18 @@ campaigns = sa.Table(
     "campaigns",
     metadata,
     sa.Column("id", sa.Integer, primary_key=True),
+    # `name` is identity, not config: the lookup key, the unique
+    # constraint behind UniqueViolation on re-registration, and the slug
+    # behind the S3/Redis prefixes. It is the one §11 key that is also a
+    # column, and the column wins.
     sa.Column("name", sa.String(200), nullable=False, unique=True),
-    sa.Column("record_type", sa.String(400), nullable=False),
-    sa.Column("record_description", sa.Text, nullable=False),
-    sa.Column("legal_basis", sa.Text, nullable=False),
-    sa.Column("requester_name", sa.String(200), nullable=False),
-    sa.Column("requester_email", sa.String(320), nullable=False),
-    sa.Column("requester_organization", sa.String(200)),
-    sa.Column("requester_phone", sa.String(64)),
-    sa.Column("requester_mailing_address", sa.String(500)),
-    sa.Column("anonymous", sa.Boolean, nullable=False, default=True),
-    sa.Column("consent_confirmed", sa.Boolean, nullable=False, default=False),
-    sa.Column("scope", sa.Text, nullable=False),  # JSON: levels, states, only
-    sa.Column("limits", sa.Text, nullable=False),  # JSON, §11
-    sa.Column("contacts", sa.Text, nullable=False),  # JSON: min_confidence
+    # The whole §11 document, verbatim YAML. Every config field is read
+    # back by parsing this — no config key gets its own column, so the
+    # two representations cannot drift.
+    sa.Column("config_yaml", sa.Text, nullable=False),
+    # Runtime state; these appear nowhere in the config document.
     sa.Column("active", sa.Boolean, nullable=False, default=False),
     sa.Column("seeded", sa.Boolean, nullable=False, default=False),
-    sa.Column("dry_run", sa.Boolean, nullable=False, default=True),
-    sa.Column("notify_email", sa.String(320)),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
 
@@ -194,26 +188,7 @@ class SqlRecordsStore:
     # -- row mappers -------------------------------------------------------
     @staticmethod
     def _campaign(row: Row[Any]) -> Campaign:
-        config = CampaignConfig(
-            name=row.name,
-            record_type=row.record_type,
-            record_description=row.record_description,
-            legal_basis=row.legal_basis,
-            requester=RequesterConfig(
-                name=row.requester_name,
-                email=row.requester_email,
-                organization=row.requester_organization,
-                phone=row.requester_phone,
-                mailing_address=row.requester_mailing_address,
-                anonymous=row.anonymous,
-                consent_confirmed=row.consent_confirmed,
-            ),
-            scope=ScopeConfig.model_validate(json.loads(row.scope)),
-            limits=LimitsConfig.model_validate(json.loads(row.limits)),
-            contacts=ContactsConfig.model_validate(json.loads(row.contacts)),
-            dry_run=row.dry_run,
-            notify_email=row.notify_email,
-        )
+        config = parse_campaign_config(row.config_yaml)
         return Campaign(
             id=row.id,
             config=config,
@@ -330,23 +305,9 @@ class SqlRecordsStore:
     def insert_campaign(self, config: CampaignConfig, created_at: datetime) -> Campaign:
         values = dict(
             name=config.name,
-            record_type=config.record_type,
-            record_description=config.record_description,
-            legal_basis=config.legal_basis,
-            requester_name=config.requester.name,
-            requester_email=config.requester.email,
-            requester_organization=config.requester.organization,
-            requester_phone=config.requester.phone,
-            requester_mailing_address=config.requester.mailing_address,
-            anonymous=config.requester.anonymous,
-            consent_confirmed=config.requester.consent_confirmed,
-            scope=config.scope.model_dump_json(),
-            limits=config.limits.model_dump_json(),
-            contacts=config.contacts.model_dump_json(),
+            config_yaml=dump_campaign_config(config),
             active=False,
             seeded=False,
-            dry_run=config.dry_run,
-            notify_email=config.notify_email,
             created_at=created_at,
         )
         try:
@@ -388,26 +349,21 @@ class SqlRecordsStore:
 
     def update_campaign_config(self, campaign_id: int, config: CampaignConfig) -> None:
         with self._engine.begin() as conn:
+            # The stored `name` wins over the document's: a rename here
+            # would orphan the S3/Redis prefixes keyed on the old slug,
+            # and it never took effect when the config lived in columns
+            # either. Rewriting the document to match keeps the column
+            # and the YAML from disagreeing about identity.
+            row = conn.execute(
+                sa.select(campaigns.c.name).where(campaigns.c.id == campaign_id)
+            ).first()
+            if row is None:
+                return
+            stored = config.model_copy(update={"name": row.name})
             conn.execute(
                 sa.update(campaigns)
                 .where(campaigns.c.id == campaign_id)
-                .values(
-                    record_type=config.record_type,
-                    record_description=config.record_description,
-                    legal_basis=config.legal_basis,
-                    requester_name=config.requester.name,
-                    requester_email=config.requester.email,
-                    requester_organization=config.requester.organization,
-                    requester_phone=config.requester.phone,
-                    requester_mailing_address=config.requester.mailing_address,
-                    anonymous=config.requester.anonymous,
-                    consent_confirmed=config.requester.consent_confirmed,
-                    scope=config.scope.model_dump_json(),
-                    limits=config.limits.model_dump_json(),
-                    contacts=config.contacts.model_dump_json(),
-                    dry_run=config.dry_run,
-                    notify_email=config.notify_email,
-                )
+                .values(config_yaml=dump_campaign_config(stored))
             )
 
     def count_outbound_since(self, campaign_id: int, since: datetime) -> int:
@@ -448,6 +404,17 @@ class SqlRecordsStore:
         with self._engine.connect() as conn:
             row = conn.execute(
                 sa.select(jurisdictions).where(jurisdictions.c.id == jurisdiction_id)
+            ).first()
+        return self._jurisdiction(row) if row else None
+
+    def find_jurisdiction(self, name: str, state: str, level: str) -> Jurisdiction | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                sa.select(jurisdictions).where(
+                    jurisdictions.c.level == level,
+                    jurisdictions.c.state == state,
+                    jurisdictions.c.name == name,
+                )
             ).first()
         return self._jurisdiction(row) if row else None
 
@@ -862,6 +829,7 @@ class SqlRecordsStore:
         resend_id: str | None,
         next_action_at: datetime,
         now: datetime,
+        stamp_cooldown: bool = True,
     ) -> tuple[EmailThread, EmailRecord]:
         try:
             with self._engine.begin() as conn:
@@ -920,11 +888,12 @@ class SqlRecordsStore:
                     attachment_refs=[],
                     created_at=now,
                 )
-                conn.execute(
-                    sa.update(jurisdictions)
-                    .where(jurisdictions.c.id == jurisdiction_id)
-                    .values(last_contacted_at=now)
-                )
+                if stamp_cooldown:
+                    conn.execute(
+                        sa.update(jurisdictions)
+                        .where(jurisdictions.c.id == jurisdiction_id)
+                        .values(last_contacted_at=now)
+                    )
         except IntegrityError as exc:
             raise UniqueViolation(f"thread_token {thread_token!r}") from exc
         thread = self.get_thread(thread_id)

@@ -6,6 +6,7 @@ Commands:
     pr-records start|stop <name>            flip campaigns.active
     pr-records kill <name>                  permanent purge
     pr-records run                          orchestrator + all consumers
+    pr-records healthcheck                  ping a running `run` over Redis
 """
 
 from __future__ import annotations
@@ -14,9 +15,13 @@ import argparse
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 from types import FrameType
+
+from harvest_core.constants import HEALTH_PROBE_TIMEOUT_S
+from harvest_core.health import HealthResponder, probe
 
 from .config import load_campaign_config
 from .constants import (
@@ -29,6 +34,7 @@ from .constants import (
     SHUTDOWN_DRAIN_S,
 )
 from .consumer import drain_dlq, process_queue
+from .health import SERVICE_NAME, build_status
 from .ops import kill_campaign, register_campaign, set_active
 from .orchestrator import Orchestrator
 from .receiver import handle_inbound
@@ -53,6 +59,7 @@ def build_world() -> World:
     from harvest_core.adapters.db import create_engine
     from harvest_core.adapters.fetcher import HttpxFetcher
     from harvest_core.adapters.redis_kv import RedisKeyValue
+    from harvest_core.adapters.redis_pubsub import RedisPubSub
     from harvest_core.adapters.s3 import S3ObjectStore
     from harvest_core.adapters.serper import SerperSearch
     from harvest_core.adapters.sqs import SqsQueue
@@ -68,10 +75,11 @@ def build_world() -> World:
     sqs = boto3.client("sqs", endpoint_url=os.environ.get("AWS_ENDPOINT_URL"))
     luna = LunaContacts.from_env()
     terra = TerraCorrespondence.from_env()
+    redis_url = _require_env("REDIS_URL")
     return World(
         clock=SystemClock(),
         store=SqlRecordsStore(engine),
-        kv=RedisKeyValue.from_url(_require_env("REDIS_URL")),
+        kv=RedisKeyValue.from_url(redis_url),
         mail_bucket=S3ObjectStore(s3, _require_env("PR_MAIL_BUCKET")),
         documents=S3ObjectStore(s3, _require_env("PR_DOCUMENTS_BUCKET")),
         search_queue=SqsQueue(sqs, _require_env("PR_SEARCH_QUEUE_URL")),
@@ -87,6 +95,8 @@ def build_world() -> World:
         transport=ResendTransport(_require_env("RESEND_API_KEY")),
         from_address=_require_env("PR_FROM_ADDRESS"),
         census=CensusGovSource(),
+        # Its own client: a subscribed connection cannot serve KeyValue.
+        pubsub=RedisPubSub.from_url(redis_url),
     )
 
 
@@ -158,6 +168,24 @@ def run_service(world: World) -> None:
     if dlqs:
         loops.append(threading.Thread(target=dlq_loop, name="dlq-watcher", daemon=True))
 
+    # Health: answer pings on Redis pub/sub, reporting on the threads above
+    # and the orchestrator's tick. Kept out of `loops` on purpose — it is not
+    # part of the send drain, and it must not report on itself.
+    health_stop = threading.Event()
+    health_thread: threading.Thread | None = None
+    if world.pubsub is not None:
+        responder = HealthResponder(
+            world.pubsub,
+            SERVICE_NAME,
+            lambda: build_status(loops, orchestrator.beat),
+        )
+        health_thread = threading.Thread(
+            target=responder.serve_forever,
+            args=(health_stop,),
+            name="health",
+            daemon=True,
+        )
+
     # A send is a real legal request, and `_deliver` runs before the emails
     # row is written: a task killed in that window redelivers and mails the
     # office twice. So the container's stop signal has to drain rather than
@@ -170,6 +198,7 @@ def run_service(world: World) -> None:
         log.info("signal %s: draining consumers", signum)
         orchestrator.stop()
         stop.set()
+        health_stop.set()
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -177,6 +206,11 @@ def run_service(world: World) -> None:
 
     for loop in loops:
         loop.start()
+    # Strictly after the consumers: an unstarted thread reads as dead, so a
+    # responder that answered first would report four dead consumers, and
+    # three of those at 30 s intervals kills the task inside its startPeriod.
+    if health_thread is not None:
+        health_thread.start()
     try:
         orchestrator.run_forever()
     except KeyboardInterrupt:
@@ -184,6 +218,10 @@ def run_service(world: World) -> None:
     finally:
         orchestrator.stop()
         stop.set()
+        # Stop answering before the drain, not after: a container health
+        # check that keeps passing through shutdown just delays the
+        # replacement task.
+        health_stop.set()
         # Consumers are daemons: without the join the interpreter exits and
         # takes any in-flight handler with it, mid-send. The budget is one
         # shared wall-clock window — the threads drain concurrently, so each
@@ -197,6 +235,27 @@ def run_service(world: World) -> None:
                 log.warning("consumer %s did not finish its pass in time", loop.name)
 
 
+def healthcheck(timeout_s: float) -> int:
+    """Ping the running service; exit 0 healthy, 1 not.
+
+    Never goes through `build_world`. That opens Postgres and runs the boot
+    migration on the way past, which a check running every thirty seconds
+    must not do — REDIS_URL is the whole of what a probe needs.
+    """
+    from harvest_core.adapters.redis_pubsub import RedisPubSub
+
+    status = probe(
+        RedisPubSub.from_url(_require_env("REDIS_URL")),
+        SERVICE_NAME,
+        timeout_s=timeout_s,
+    )
+    if status.healthy:
+        print("healthy")
+        return 0
+    print(f"unhealthy: {status.failures()}", file=sys.stderr)
+    return 1
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     parser = argparse.ArgumentParser(prog="pr-records")
@@ -208,7 +267,13 @@ def main() -> None:
         cmd = sub.add_parser(name)
         cmd.add_argument("name")
     sub.add_parser("run")
+    health = sub.add_parser("healthcheck")
+    health.add_argument("--timeout", type=float, default=HEALTH_PROBE_TIMEOUT_S)
     args = parser.parse_args()
+
+    # Before build_world, deliberately: see the docstring above.
+    if args.command == "healthcheck":
+        raise SystemExit(healthcheck(args.timeout))
 
     world = build_world()  # migrates as a side effect
     if args.command == "migrate":

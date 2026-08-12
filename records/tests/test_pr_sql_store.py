@@ -5,7 +5,8 @@ from typing import Any
 
 import pytest
 import sqlalchemy as sa
-from public_records.adapters.sql_store import SqlRecordsStore, migrate
+import yaml
+from public_records.adapters.sql_store import SqlRecordsStore, campaigns, migrate
 from public_records.config import CampaignConfig
 from public_records.domain import EscalationReason, OutboundKind, ThreadStatus
 from public_records.errors import IllegalTransition, UniqueViolation
@@ -56,6 +57,31 @@ def test_campaign_round_trip_and_unique_name(store: SqlRecordsStore) -> None:
     assert reloaded is not None and reloaded.active and reloaded.seeded
 
 
+def test_config_lives_in_the_yaml_column_and_name_stays_identity() -> None:
+    engine = sa.create_engine("sqlite+pysqlite:///:memory:")
+    migrate(engine)
+    store = SqlRecordsStore(engine)
+    created = store.insert_campaign(_config(), NOW)
+
+    with engine.connect() as conn:
+        document = conn.execute(
+            sa.select(campaigns.c.config_yaml).where(campaigns.c.id == created.id)
+        ).scalar_one()
+    parsed = yaml.safe_load(document)
+    # the whole §11 document, defaults included — not one column per key
+    assert parsed["requester"]["email"] == "ada@example.org"
+    assert parsed["limits"]["fee_budget_usd"] == 50.0
+    assert parsed["limits"]["max_followups"] == 3
+    assert parsed["contacts"]["min_confidence"] == 0.6
+    assert parsed["dry_run"] is True
+
+    # a rename through the config document is ignored: the column is identity
+    store.update_campaign_config(created.id, _config(name="renamed"))
+    loaded = store.get_campaign(created.id)
+    assert loaded is not None and loaded.config.name == "camp"
+    assert store.get_campaign_by_name("renamed") is None
+
+
 def test_target_resolution_and_consumed_indexes(store: SqlRecordsStore) -> None:
     campaign = store.insert_campaign(_config(), NOW)
     jur = store.insert_jurisdiction("Pasadena", "CA", "city")
@@ -100,6 +126,26 @@ def test_initial_send_thread_email_and_cooldown_commit_together(
             from_address="a@b", to_address="x@y.gov", subject="s", body="b",
             resend_id=None, next_action_at=NOW, now=NOW,
         )
+
+
+def test_initial_send_can_leave_the_shared_cooldown_clock_alone(
+    store: SqlRecordsStore,
+) -> None:
+    campaign = store.insert_campaign(_config(), NOW)
+    jur = store.insert_jurisdiction("Pasadena", "CA", "city")
+    assert store.find_jurisdiction("Pasadena", "CA", "city") == jur
+    assert store.find_jurisdiction("Pasadena", "CA", "county") is None
+
+    store.record_initial_send(
+        campaign_id=campaign.id, jurisdiction_id=jur.id, thread_token="cd" * 8,
+        contact_email="inbox@example.test", parent_thread_id=None,
+        existing_thread_id=None, from_address="req@dialogue.org",
+        to_address="inbox@example.test", subject="s", body="b",
+        resend_id=None, next_action_at=NOW, now=NOW, stamp_cooldown=False,
+    )
+    reloaded = store.get_jurisdiction(jur.id)
+    assert reloaded is not None and reloaded.last_contacted_at is None
+    assert store.count_outbound_since(campaign.id, NOW) == 1  # the email still lands
 
 
 def test_thread_send_and_transition_validation(store: SqlRecordsStore) -> None:

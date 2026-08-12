@@ -174,12 +174,18 @@ equivalent fake-backed tests.
    export SERPER_API_KEY=... RESEND_API_KEY=... OPENAI_API_KEY=...
    ```
 
-2. **Register a one-county dry-run campaign** (a YAML matching §11 with
-   a seeded `contact_email` on the jurisdiction skips Serper entirely):
+2. **Register a one-county dry-run campaign.** To skip Serper (and
+   census) entirely, register a *test* campaign instead — a YAML whose
+   `test_contacts` name the jurisdictions and the addresses that stand
+   in for their offices, as in `configs/pr-test.yaml`. Prefer that to
+   writing a `contact_email` onto the shared `jurisdictions` row, which
+   would redirect real campaigns in the same scope:
 
    ```bash
    uv run pr-records migrate
    uv run pr-records register configs/pr-smoke.yaml   # dry_run: true
+   # …or, without any search provider:
+   uv run pr-records register configs/pr-test.yaml
    uv run pr-records start <campaign-name>
    uv run pr-records run
    ```
@@ -224,45 +230,40 @@ alarm on DLQ depth in production all the same.
 
 ---
 
-## Container images (`ops/Dockerfile.*`)
+## Container image and deploying
+
+One image, `pr-records`, built from the repo root because `uv.lock` pins
+the whole workspace:
 
 ```bash
-docker build -f ops/Dockerfile.records      -t pr-records .           # context = repo root
-docker build -f ops/Dockerfile.orchestrator -t harvest-orchestrator .
+docker build -t pr-records .
 ```
 
-The context is the **repo root** either way, because `uv.lock` pins the
-whole workspace. Each image still carries only the two packages its
-service is built from — the dependency layer is installed from
-`uv export --package <name>` (53 requirements) rather than
-`uv sync`, which would resolve the workspace's full 84 and drag Scrapy,
-scrapy-playwright and pypdf into both images. Neither image can import
-the other service.
+The image still carries only `harvest_core` and `public_records` — the
+dependency layer installs from `uv export --package pr-records` (53
+requirements) rather than `uv sync`, which would resolve the workspace's
+full 84 and drag Scrapy, scrapy-playwright and pypdf in. It cannot
+import or run the harvesting services.
 
-Both run as a non-root user, ship a venv at `/opt/venv` (built at the
-same path, since console scripts hardcode their interpreter), and use
-`ENTRYPOINT`'s exec form so `SIGTERM` reaches Python as PID 1 — which is
-what the drain above depends on. Neither declares a `HEALTHCHECK`: these
-are queue workers with no HTTP listener, so liveness is the task staying
-up, and the real signals are queue and DLQ depth.
+It runs as a non-root user, ships a venv at `/opt/venv` (built at the
+same path, since console scripts hardcode their interpreter), and uses
+the exec form so `SIGTERM` reaches Python as PID 1 — which is what the
+drain above depends on. No `HEALTHCHECK`: this is a queue worker with no
+HTTP listener, so liveness is the task staying up, and the real signals
+are queue and DLQ depth.
 
-The one-off commands are the same image with a different `command`:
-`["migrate"]`, `["register", "/app/configs/<campaign>.yaml"]`. Run
-`migrate` to completion before rolling the services.
+`ENTRYPOINT` is `pr-records`, so one-off commands are the same image with
+a different `command`: `["migrate"]`,
+`["register", "/app/configs/<campaign>.yaml"]`. Default is `["run"]`.
+Run `migrate` before rolling the service.
 
-Status: not yet built (Docker needs root on this workstation). What is
-verified is the builder stage — its `COPY`/`RUN` instructions executed
-locally against the real workspace, producing the expected 56-package
-environment and a working entry point for each service.
+**`ops/DEPLOY.md` is the runbook** — pushing to ECR, the twelve
+environment variables that connect the container to an existing RDS /
+ElastiCache / SQS / S3, the IAM and security-group wiring, and the task
+definition settings that differ from AWS defaults and fail quietly if
+missed.
 
-## Deploying (`ops/terraform/`)
-
-A Terraform module brings up both services on ECS/Fargate with RDS,
-ElastiCache, the seven queues and their DLQs, three buckets, Secrets
-Manager slots, IAM, and DLQ alarms. It assumes an existing VPC with NAT
-egress and creates nothing public.
-
-**`ops/terraform/README.md` is the runbook** — apply order, where the
-API keys go, how to run the one-off `migrate` / `register` / `start`
-tasks, and why `pr-records` is pinned to a single instance. Read it
-before applying; the steps are ordered for a reason.
+Status: not yet built (Docker needs a `docker` group on this
+workstation). What is verified is that the `uv export` step resolves
+against the real workspace, produces exactly 53 requirements with no
+harvester dependencies, and that the `pr-records` entry point exists.

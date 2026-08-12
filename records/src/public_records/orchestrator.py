@@ -10,6 +10,8 @@ import logging
 import threading
 from hashlib import sha256
 
+from harvest_core.health import Beat
+
 from .census import ensure_states
 from .config import ScopeConfig
 from .constants import (
@@ -80,12 +82,76 @@ def _queries_for(world: World, campaign: Campaign, jurisdiction: Jurisdiction) -
     return queries[:QUERIES_PER_TARGET_MAX]
 
 
+def _seed_test_contacts(world: World, campaign: Campaign) -> int:
+    """A test campaign's targets come from its config, already answered:
+    the address is given, so the search stage is skipped outright rather
+    than run and discarded. Same target bookkeeping as the searched path
+    — `resolve_target` still gates the enqueue — so a crashed pass
+    re-runs without double-sending.
+
+    `bypass_cooldown` because the office was never really contacted: the
+    mail goes to the test address, and the shared clock on a real
+    jurisdiction row belongs to the campaigns that do mail it.
+    """
+    sent = 0
+    for contact in campaign.config.test_contacts:
+        jurisdiction = world.store.find_jurisdiction(
+            contact.jurisdiction, contact.state, contact.level
+        )
+        if jurisdiction is None:
+            try:
+                jurisdiction = world.store.insert_jurisdiction(
+                    contact.jurisdiction, contact.state, contact.level
+                )
+            except UniqueViolation:  # concurrent seeder won; harmless
+                jurisdiction = world.store.find_jurisdiction(
+                    contact.jurisdiction, contact.state, contact.level
+                )
+                assert jurisdiction is not None
+
+        target = world.store.find_search_target(campaign.id, jurisdiction.id)
+        if target is None:
+            try:
+                target = world.store.insert_search_target(
+                    campaign.id, jurisdiction.id, world.clock.now()
+                )
+            except UniqueViolation:
+                target = world.store.find_search_target(campaign.id, jurisdiction.id)
+                assert target is not None
+        if target.resolved or target.queries_enqueued > 0:
+            continue  # crash-rerun skip marker
+
+        # Resolve first, as the searched seeded-contact branch does. A
+        # crash in the window between drops this contact (see that
+        # branch); re-sending instead would risk two copies of a real
+        # request racing through the sender pool, which is the worse
+        # failure of the two.
+        if world.store.resolve_target(target.id):
+            world.contacts_queue.send(
+                ContactMessage(
+                    campaign_id=campaign.id,
+                    jurisdiction_id=jurisdiction.id,
+                    contact_email=contact.email,
+                    source="seeded",
+                    bypass_cooldown=True,
+                ).to_json()
+            )
+            sent += 1
+    return sent
+
+
 def seed_pass(world: World) -> int:
     """Seed every active, unseeded, consented campaign. Returns the
     number of queue messages sent (queries + seeded contacts)."""
     sent = 0
     for campaign in world.store.list_campaigns():
         if not (campaign.active and not campaign.seeded and campaign.consent_confirmed):
+            continue
+        if campaign.is_test:
+            # No census and no search queue: a test campaign reaches the
+            # sender without touching either network dependency.
+            sent += _seed_test_contacts(world, campaign)
+            world.store.set_campaign_seeded(campaign.id)
             continue
         if world.census is not None:
             ensure_states(world.store, world.census, campaign.config.scope.states)
@@ -242,6 +308,10 @@ class Orchestrator:
         self.period_s = period_s
         self._locks = {name: threading.Lock() for name in ("seed", "poll", "scan", "digest")}
         self._stop = threading.Event()
+        # Health: the tick's progress marker, read by the responder in cli.py.
+        # Marked at construction so a loop that never completes a tick goes
+        # stale on schedule rather than looking eternally new.
+        self.beat = Beat(world.clock)
 
     def _run_concern(self, name: str, fn: object) -> None:
         lock = self._locks[name]
@@ -267,4 +337,8 @@ class Orchestrator:
     def run_forever(self) -> None:
         while not self._stop.is_set():
             self.tick()
+            # `tick` swallows each concern's exceptions, so reaching here
+            # means the scheduler itself is turning — which is what a stale
+            # beat would disprove.
+            self.beat.mark()
             self.world.clock.sleep(self.period_s)

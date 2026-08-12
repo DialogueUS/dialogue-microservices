@@ -80,6 +80,43 @@ class KeyValue(Protocol):
 
 
 # --------------------------------------------------------------------------
+# Pub/sub (Redis) — the health-check transport, shared by both systems.
+#
+# Deliberately separate from KeyValue rather than bolted onto it: a Redis
+# connection in subscribe mode cannot run ordinary commands, so a
+# Subscription owns a connection that the KeyValue client must not touch.
+# Nothing durable rides on this — see `health.py` for the one use.
+
+
+class Subscription(Protocol):
+    def poll(self, timeout_s: float) -> str | None:
+        """Next message payload, or None once timeout_s elapses without one.
+
+        Only real messages: transport frames (a subscribe confirmation)
+        are consumed and never returned, so the first poll after
+        subscribing cannot be mistaken for a reply.
+        """
+        ...
+
+    def close(self) -> None:
+        """Unsubscribe and release the connection. Idempotent."""
+        ...
+
+
+class PubSub(Protocol):
+    def publish(self, channel: str, message: str) -> int:
+        """Fire-and-forget: delivered only to subscribers listening *now*.
+
+        Returns how many received it; 0 means the message was dropped, not
+        queued. A subscriber must therefore be in place before the message
+        it cares about is published.
+        """
+        ...
+
+    def subscribe(self, channel: str) -> Subscription: ...
+
+
+# --------------------------------------------------------------------------
 # Object store (S3)
 
 

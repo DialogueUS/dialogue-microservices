@@ -9,13 +9,6 @@ dist/
 *.egg-info/
 .coverage
 volume/
+.env
 OLD_HARVESTER.md
 PLAN.md
-# Terraform (ops/terraform) — .terraform.lock.hcl is deliberately NOT
-# ignored: commit the one your own `terraform init` generates.
-.terraform/
-*.tfstate
-*.tfstate.*
-crash.log
-terraform.tfvars
-*.auto.tfvars

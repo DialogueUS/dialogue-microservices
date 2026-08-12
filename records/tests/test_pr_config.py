@@ -84,6 +84,40 @@ def test_bad_scope_values_rejected() -> None:
         CampaignConfig.model_validate({**MINIMAL, "scope": {"states": ["ZZ"]}})
 
 
+def test_test_contacts_shape_and_defaults() -> None:
+    assert CampaignConfig.model_validate(MINIMAL).is_test is False
+    cfg = CampaignConfig.model_validate({
+        **MINIMAL,
+        "test_contacts": [{"jurisdiction": "Kern County", "state": "CA",
+                           "email": "inbox@example.test"}],
+    })
+    assert cfg.is_test is True
+    assert cfg.test_contacts[0].level == "county"
+
+    for bad in (
+        {"jurisdiction": "Kern County", "state": "ZZ", "email": "a@b"},
+        {"jurisdiction": "Kern County", "state": "CA", "level": "galaxy", "email": "a@b"},
+        {"jurisdiction": " ", "state": "CA", "email": "a@b"},
+        {"jurisdiction": "Kern County", "state": "CA"},  # no email
+    ):
+        with pytest.raises(ValidationError):
+            CampaignConfig.model_validate({**MINIMAL, "test_contacts": [bad]})
+
+    with pytest.raises(ValidationError, match="same jurisdiction"):
+        CampaignConfig.model_validate({**MINIMAL, "test_contacts": [
+            {"jurisdiction": "Kern County", "state": "CA", "email": "a@b"},
+            {"jurisdiction": "kern county", "state": "CA", "email": "c@d"},
+        ]})
+
+
+def test_anonymous_blocked_state_covers_test_contacts() -> None:
+    # scope defaults to [ALL], so only the test contact names the state
+    with pytest.raises(ValidationError, match="TN"):
+        CampaignConfig.model_validate({**MINIMAL, "test_contacts": [
+            {"jurisdiction": "Davidson County", "state": "TN", "email": "a@b"},
+        ]})
+
+
 def test_anonymous_with_blocked_state_scope_rejected() -> None:
     with pytest.raises(ValidationError, match="TN"):
         CampaignConfig.model_validate({**MINIMAL, "scope": {"states": ["CA", "TN"]}})

@@ -98,6 +98,8 @@ def test_record_initial_send_creates_thread_and_stamps_cooldown() -> None:
     jur = store.get_jurisdiction(jid)
     assert jur is not None and jur.last_contacted_at == NOW
     assert store.count_outbound_since(cid, NOW) == 1
+
+
     with pytest.raises(UniqueViolation):  # token is globally unique
         store.record_initial_send(
             campaign_id=cid, jurisdiction_id=jid, thread_token="ab" * 8,
@@ -105,6 +107,25 @@ def test_record_initial_send_creates_thread_and_stamps_cooldown() -> None:
             from_address="a@b", to_address="x@y.gov", subject="s", body="b",
             resend_id=None, next_action_at=NOW, now=NOW,
         )
+
+
+def test_find_jurisdiction_and_the_optional_cooldown_stamp() -> None:
+    store = FakeRecordsStore()
+    cid, jid = _seed(store)
+    assert store.find_jurisdiction("Pasadena", "CA", "city") is not None
+    assert store.find_jurisdiction("Pasadena", "CA", "county") is None  # level is part of the key
+    assert store.find_jurisdiction("Nowhere", "CA", "city") is None
+
+    store.record_initial_send(
+        campaign_id=cid, jurisdiction_id=jid, thread_token="cd" * 8,
+        contact_email="inbox@example.test", parent_thread_id=None,
+        existing_thread_id=None, from_address="req@dialogue.org",
+        to_address="inbox@example.test", subject="s", body="b",
+        resend_id=None, next_action_at=NOW, now=NOW, stamp_cooldown=False,
+    )
+    jur = store.get_jurisdiction(jid)
+    assert jur is not None and jur.last_contacted_at is None
+    assert store.count_outbound_since(cid, NOW) == 1  # the email still lands
 
 
 def test_thread_transitions_validated_in_store() -> None:

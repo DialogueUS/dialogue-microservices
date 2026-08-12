@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from .adapters.llm import LangChainLLM
     from .adapters.postgres import PostgresDatastore
     from .adapters.redis_kv import RedisKeyValue
+    from .adapters.redis_pubsub import RedisPubSub, RedisSubscription
     from .adapters.s3 import S3ObjectStore
     from .adapters.serper import SerperSearch
     from .adapters.sqs import SqsQueue
@@ -27,8 +28,10 @@ if TYPE_CHECKING:
         FakeLLM,
         FakeObjectStore,
         FakePortalDiscoverer,
+        FakePubSub,
         FakeQueue,
         FakeSearch,
+        FakeSubscription,
         VirtualClock,
     )
 
@@ -42,6 +45,8 @@ if TYPE_CHECKING:
         llm: FakeLLM,
         fetcher: FakeFetcher,
         portal: FakePortalDiscoverer,
+        pubsub: FakePubSub,
+        subscription: FakeSubscription,
     ) -> None:
         _c: ports.Clock = clock
         _q: ports.TaskQueue = queue
@@ -53,6 +58,8 @@ if TYPE_CHECKING:
         _t: ports.Triage = llm
         _f: ports.Fetcher = fetcher
         _p: ports.PortalDiscoverer = portal
+        _ps: ports.PubSub = pubsub
+        _su: ports.Subscription = subscription
 
     def _check_adapters(
         clock: SystemClock,
@@ -64,6 +71,8 @@ if TYPE_CHECKING:
         llm: LangChainLLM,
         fetcher: HttpxFetcher,
         census: CensusGovSource,
+        pubsub: RedisPubSub,
+        subscription: RedisSubscription,
     ) -> None:
         _c: ports.Clock = clock
         _q: ports.TaskQueue = queue
@@ -75,3 +84,5 @@ if TYPE_CHECKING:
         _t: ports.Triage = llm
         _f: ports.Fetcher = fetcher
         _n: ports.CensusSource = census
+        _ps: ports.PubSub = pubsub
+        _su: ports.Subscription = subscription

@@ -164,6 +164,8 @@ def handle_contact(world: World, body: str) -> bool:
         resend_id=resend_id,
         next_action_at=next_action_time(world, campaign),
         now=now,
+        # a test campaign never actually contacted this office
+        stamp_cooldown=not campaign.is_test,
     )
     return True
 

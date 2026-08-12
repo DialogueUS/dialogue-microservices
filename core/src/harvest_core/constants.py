@@ -19,6 +19,20 @@ MAX_RECEIVE_COUNT = 3
 ERROR_RETRY_DAYS = 1
 LONG_POLL_WAIT_S = 20
 
+# Health check over Redis pub/sub (shared: both deployables answer on it).
+# The probe runs as a separate process in the same container, so these are
+# a wall-clock budget the container's healthCheck timeout must exceed.
+HEALTH_CHANNEL_PREFIX = "health"
+HEALTH_PROBE_TIMEOUT_S = 5.0
+# How long the responder blocks on one poll. Also the worst case for the
+# responder thread noticing a shutdown, so keep it short.
+HEALTH_RESPONDER_POLL_S = 1.0
+# A loop is stale once it has missed this many of its own intervals. Three
+# rather than one so a single slow cycle is not a restart.
+HEALTH_STALE_CYCLES = 3
+# Floor under the above, so a short interval does not make the check flap.
+HEALTH_MIN_STALE_S = 60.0
+
 # Database (managed Postgres/RDS: failover and idle timeouts close pooled
 # connections without telling the client, so pre-ping before handing one out
 # and recycle well before the server's own idle limit).

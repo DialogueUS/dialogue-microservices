@@ -62,6 +62,49 @@ def scraper_finds(pr: PrWorld, jurisdiction_name: str, email: str) -> None:
     pr.picker.picks[jurisdiction_name] = ContactPick(email=email, confidence=0.9)
 
 
+def test_test_campaign_runs_the_whole_loop_with_no_search_provider(pr: PrWorld) -> None:
+    """A test campaign rehearses seed -> send -> reply -> fulfilled
+    against a mailbox you own, with Serper (and census) never called."""
+    campaign = pr.add_campaign(
+        name="rehearsal",
+        test_contacts=[
+            {"jurisdiction": "Kern County", "state": "CA", "email": "inbox@example.test"}
+        ],
+    )
+    # no scraper_finds(): the search provider has nothing canned, so a
+    # single call would come back empty and escalate instead of sending
+
+    seed_pass(pr.world)
+    drain(pr)
+    jur = pr.store.find_jurisdiction("Kern County", "CA", "county")
+    assert jur is not None
+    thread = pr.store.find_thread(campaign.id, jur.id, "inbox@example.test")
+    assert thread is not None and thread.status is ThreadStatus.REQUEST_SENT
+    [initial] = pr.transport.sent
+    assert initial.to_address == "inbox@example.test"
+
+    pdf = b"%PDF-1.4 the requested records"
+    pr.classifier.canned("attached are the records", Classification(
+        category=InboundCategory.DATA_PROVIDED, summary="records", confidence=0.9,
+    ))
+    deliver_reply(pr, thread.thread_token, "attached are the records", "<data@kern>",
+                  attachments=[("records.pdf", "application/pdf", pdf)])
+
+    final = pr.store.get_thread(thread.id)
+    assert final is not None and final.status is ThreadStatus.FULFILLED
+    assert final.attachment_keys == [
+        f"rehearsal/kern-county/{sha256(pdf).hexdigest()[:8]}_records.pdf"
+    ]
+    assert pr.store.list_escalations() == []
+    # the point of the whole feature
+    assert pr.search.calls == []
+    assert pr.query_generator.calls == []
+    # and the shared office row is untouched by the rehearsal
+    office = pr.store.get_jurisdiction(jur.id)
+    assert office is not None
+    assert office.last_contacted_at is None and office.contact_email is None
+
+
 def test_happy_path_seed_to_fulfilled_with_exact_timing(pr: PrWorld) -> None:
     campaign = pr.add_campaign(notify_email="ops@example.org")
     jur = pr.add_jurisdiction("Kern County")

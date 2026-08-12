@@ -161,6 +161,12 @@ class Campaign:
     def dry_run(self) -> bool:
         return self.config.dry_run
 
+    @property
+    def is_test(self) -> bool:
+        """Seeded from `test_contacts` instead of searched for: no
+        Serper, no census, and no claim on the shared office clock."""
+        return self.config.is_test
+
 
 @dataclass
 class Jurisdiction:
